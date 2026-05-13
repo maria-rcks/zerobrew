@@ -46,12 +46,12 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
 
     let binaries = parse_binary_artifacts(cask)?;
     let apps = parse_app_artifacts(cask)?;
-    if binaries.is_empty() {
+    if binaries.is_empty() && apps.is_empty() {
         let found = artifact_types(cask);
         return Err(Error::InvalidArgument {
             message: format!(
-                "cask '{token}' has no binary artifacts (found: {found}); \
-                 only casks with 'binary' artifacts are currently supported"
+                "cask '{token}' has no supported artifacts (found: {found}); \
+                 only casks with 'binary' and 'app' artifacts are currently supported"
             ),
         });
     }
@@ -359,7 +359,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_cask_no_binary_artifacts_lists_found_types() {
+    fn resolve_cask_accepts_app_only_casks() {
         let cask = serde_json::json!({
             "token": "ghostty",
             "version": "1.0.0",
@@ -371,10 +371,28 @@ mod tests {
             ]
         });
 
-        let err = resolve_cask("ghostty", &cask).unwrap_err();
+        let resolved = resolve_cask("ghostty", &cask).unwrap();
+        assert_eq!(resolved.apps.len(), 1);
+        assert!(resolved.binaries.is_empty());
+    }
+
+    #[test]
+    fn resolve_cask_no_supported_artifacts_lists_found_types() {
+        let cask = serde_json::json!({
+            "token": "pkg-only",
+            "version": "1.0.0",
+            "url": "https://example.com/pkg-only.pkg",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "pkg": ["Pkg.pkg"] },
+                { "zap": [{ "trash": ["~/Library/Application Support/Pkg"] }] }
+            ]
+        });
+
+        let err = resolve_cask("pkg-only", &cask).unwrap_err();
         let msg = err.to_string();
-        assert!(msg.contains("no binary artifacts"), "got: {msg}");
-        assert!(msg.contains("app"), "got: {msg}");
+        assert!(msg.contains("no supported artifacts"), "got: {msg}");
+        assert!(msg.contains("pkg"), "got: {msg}");
         assert!(msg.contains("zap"), "got: {msg}");
     }
 }

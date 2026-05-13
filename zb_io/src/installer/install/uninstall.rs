@@ -1,6 +1,7 @@
 use zb_core::{Error, formula_token};
 
 use super::Installer;
+use super::bottle::uninstall_cask_apps;
 
 impl Installer {
     pub fn uninstall(&mut self, name: &str) -> Result<(), Error> {
@@ -11,6 +12,7 @@ impl Installer {
 
         let keg_path = self.cellar.keg_path(keg_name, &installed.version);
         self.linker.unlink_keg(&keg_path)?;
+        uninstall_cask_apps(&keg_path)?;
 
         {
             let tx = self.db.transaction()?;
@@ -40,6 +42,7 @@ impl Installer {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
 
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
@@ -52,6 +55,20 @@ mod tests {
     use crate::storage::db::Database;
     use crate::storage::store::Store;
     use crate::{Installer, Linker};
+
+    fn create_test_zip(entries: Vec<(&str, &[u8])>) -> Vec<u8> {
+        use zip::write::SimpleFileOptions;
+
+        let cursor = std::io::Cursor::new(Vec::new());
+        let mut zip = zip::ZipWriter::new(cursor);
+
+        for (path, content) in entries {
+            zip.start_file(path, SimpleFileOptions::default()).unwrap();
+            zip.write_all(content).unwrap();
+        }
+
+        zip.finish().unwrap().into_inner()
+    }
 
     #[tokio::test]
     async fn uninstall_cleans_everything() {
@@ -459,5 +476,92 @@ end
         let err = installer.uninstall("hashicorp/tap/terraform").unwrap_err();
         assert!(matches!(err, zb_core::Error::NotInstalled { .. }));
         assert!(installer.is_installed("terraform"));
+    }
+
+    #[tokio::test]
+    async fn uninstall_removes_installed_app_backed_cask() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let cask_zip = create_test_zip(vec![
+            (
+                "CoreLocationCLI.app/Contents/MacOS/CoreLocationCLI",
+                b"#!/bin/sh\necho corelocationcli",
+            ),
+            ("CoreLocationCLI.app/Contents/Info.plist", b"plist"),
+        ]);
+        let cask_sha = sha256_hex(&cask_zip);
+        let cask_json = format!(
+            r#"{{
+                "token": "corelocationcli",
+                "version": "4.0.6",
+                "url": "{}/downloads/CoreLocationCLI.zip",
+                "sha256": "{}",
+                "artifacts": [
+                    {{ "app": ["CoreLocationCLI.app"] }},
+                    {{ "binary": ["$APPDIR/CoreLocationCLI.app/Contents/MacOS/CoreLocationCLI"] }}
+                ]
+            }}"#,
+            mock_server.uri(),
+            cask_sha
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/cask/corelocationcli.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&cask_json))
+            .mount(&mock_server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/downloads/CoreLocationCLI.zip"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(cask_zip))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("prefix");
+        let app_dir = tmp.path().join("Applications");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_cask_base_url(format!("{}/cask", mock_server.uri()));
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new_at(prefix.join("Cellar")).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new_with_app_dir(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix.clone(),
+            app_dir.clone(),
+            root.join("locks"),
+        );
+
+        installer
+            .install(&["cask:corelocationcli".to_string()], true)
+            .await
+            .unwrap();
+
+        assert!(installer.is_installed("cask:corelocationcli"));
+        assert!(prefix.join("bin/CoreLocationCLI").exists());
+        assert!(
+            app_dir
+                .join("CoreLocationCLI.app/Contents/Info.plist")
+                .exists()
+        );
+
+        installer.uninstall("cask:corelocationcli").unwrap();
+
+        assert!(!installer.is_installed("cask:corelocationcli"));
+        assert!(!prefix.join("bin/CoreLocationCLI").exists());
+        assert!(!app_dir.join("CoreLocationCLI.app").exists());
+        assert!(!prefix.join("Cellar/cask:corelocationcli").exists());
     }
 }
