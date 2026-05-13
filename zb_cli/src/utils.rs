@@ -4,13 +4,20 @@ use zb_io::Installer;
 
 pub fn normalize_formula_name(name: &str) -> Result<String, zb_core::Error> {
     let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return Err(zb_core::Error::MissingFormula {
+            name: name.to_string(),
+        });
+    }
+
     if let Some(token) = trimmed.strip_prefix("cask:") {
+        let token = token.trim();
         if token.is_empty() {
             return Err(zb_core::Error::InvalidArgument {
                 message: "cask token cannot be empty".to_string(),
             });
         }
-        return Ok(trimmed.to_string());
+        return Ok(format!("cask:{token}"));
     }
 
     if let Some((tap, formula)) = trimmed.rsplit_once('/') {
@@ -184,6 +191,26 @@ mod tests {
     fn normalize_homebrew_cask_prefixes_token() {
         assert_eq!(
             normalize_formula_name("homebrew/cask/docker-desktop").unwrap(),
+            "cask:docker-desktop".to_string()
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_blank_formula() {
+        let err = normalize_formula_name(" \t ").unwrap_err();
+        assert!(matches!(err, zb_core::Error::MissingFormula { .. }));
+    }
+
+    #[test]
+    fn normalize_rejects_empty_cask_token() {
+        let err = normalize_formula_name("cask:   ").unwrap_err();
+        assert!(matches!(err, zb_core::Error::InvalidArgument { .. }));
+    }
+
+    #[test]
+    fn normalize_trims_cask_token() {
+        assert_eq!(
+            normalize_formula_name(" cask:docker-desktop ").unwrap(),
             "cask:docker-desktop".to_string()
         );
     }
