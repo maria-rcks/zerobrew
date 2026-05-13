@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tokio::sync::{Mutex, Semaphore, mpsc};
 
+use crate::checksum::normalize_sha256;
 use crate::storage::blob::BlobCache;
 use zb_core::Error;
 
@@ -140,9 +141,11 @@ impl ParallelDownloader {
         downloader: Arc<Downloader>,
         semaphore: Arc<Semaphore>,
         inflight: Arc<Mutex<InflightMap>>,
-        req: DownloadRequest,
+        mut req: DownloadRequest,
         progress: Option<DownloadProgressCallback>,
     ) -> Result<PathBuf, Error> {
+        req.sha256 = normalize_sha256(&req.sha256)?;
+
         let mut receiver = {
             let mut map = inflight.lock().await;
 

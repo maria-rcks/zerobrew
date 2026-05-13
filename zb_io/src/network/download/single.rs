@@ -12,6 +12,7 @@ use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, RwLock, Semaphore};
 use tracing::warn;
 
+use crate::checksum::normalize_sha256;
 use crate::progress::InstallProgress;
 use crate::storage::blob::BlobCache;
 use zb_core::Error;
@@ -165,19 +166,21 @@ impl Downloader {
         name: Option<String>,
         progress: Option<DownloadProgressCallback>,
     ) -> Result<PathBuf, Error> {
-        if self.blob_cache.has_blob(expected_sha256) {
+        let expected_sha256 = normalize_sha256(expected_sha256)?;
+
+        if self.blob_cache.has_blob(&expected_sha256) {
             if let (Some(cb), Some(n)) = (&progress, &name) {
                 cb(InstallProgress::DownloadCompleted {
                     name: n.clone(),
                     total_bytes: 0,
                 });
             }
-            return Ok(self.blob_cache.blob_path(expected_sha256));
+            return Ok(self.blob_cache.blob_path(&expected_sha256));
         }
 
         let alternates = get_alternate_urls(url);
 
-        self.download_with_racing(url, &alternates, expected_sha256, name, progress)
+        self.download_with_racing(url, &alternates, &expected_sha256, name, progress)
             .await
     }
 
@@ -398,6 +401,7 @@ pub(crate) async fn download_response_internal(
     name: Option<String>,
     progress: Option<DownloadProgressCallback>,
 ) -> Result<PathBuf, Error> {
+    let expected_sha256 = normalize_sha256(expected_sha256)?;
     let total_bytes = response
         .headers()
         .get(CONTENT_LENGTH)
@@ -412,7 +416,7 @@ pub(crate) async fn download_response_internal(
     }
 
     let mut writer = blob_cache
-        .start_write(expected_sha256)
+        .start_write(&expected_sha256)
         .map_err(Error::network("failed to create blob writer"))?;
 
     let mut hasher = Sha256::new();
@@ -441,7 +445,7 @@ pub(crate) async fn download_response_internal(
 
     if actual_hash != expected_sha256 {
         return Err(Error::ChecksumMismatch {
-            expected: expected_sha256.to_string(),
+            expected: expected_sha256,
             actual: actual_hash,
         });
     }
@@ -493,6 +497,29 @@ mod tests {
 
         assert!(result.is_ok());
         let blob_path = result.unwrap();
+        assert!(blob_path.exists());
+        assert_eq!(std::fs::read(&blob_path).unwrap(), content);
+    }
+
+    #[tokio::test]
+    async fn accepts_uppercase_checksum() {
+        let mock_server = MockServer::start().await;
+        let content = b"hello world";
+        let sha256 = "B94D27B9934D3E08A52E52D7DA7DABFAC484EFE37A5380EE9088F7ACE2EFCDE9";
+
+        Mock::given(method("GET"))
+            .and(path("/test.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(content.to_vec()))
+            .mount(&mock_server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let blob_cache = BlobCache::new(tmp.path()).unwrap();
+        let downloader = Downloader::new(blob_cache);
+
+        let url = format!("{}/test.tar.gz", mock_server.uri());
+        let blob_path = downloader.download(&url, sha256).await.unwrap();
+
         assert!(blob_path.exists());
         assert_eq!(std::fs::read(&blob_path).unwrap(), content);
     }

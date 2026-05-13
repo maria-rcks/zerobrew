@@ -20,6 +20,7 @@ use super::auth::{
 };
 use super::single::download_response_internal;
 use super::{DownloadProgressCallback, MAX_CHUNK_RETRIES, MAX_CONCURRENT_CHUNKS};
+use crate::checksum::normalize_sha256;
 
 const MIN_CHUNK_SIZE: u64 = 5 * 1024 * 1024;
 const MAX_CHUNK_SIZE: u64 = 20 * 1024 * 1024;
@@ -56,7 +57,7 @@ pub(crate) fn server_supports_ranges(response: &reqwest::Response) -> bool {
         .headers()
         .get(ACCEPT_RANGES)
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == "bytes")
+        .map(|v| v.eq_ignore_ascii_case("bytes"))
         .unwrap_or(false)
 }
 
@@ -214,13 +215,15 @@ async fn download_chunk(
 pub(crate) async fn download_with_chunks(
     ctx: &ChunkedDownloadContext<'_>,
 ) -> Result<PathBuf, Error> {
+    let expected_sha256 = normalize_sha256(ctx.expected_sha256)?;
+
     if !validate_range_support(ctx).await? {
         let response =
             fetch_download_response_internal(ctx.client, ctx.token_cache, ctx.url).await?;
         return download_response_internal(
             ctx.blob_cache,
             response,
-            ctx.expected_sha256,
+            &expected_sha256,
             ctx.name.clone(),
             ctx.progress.clone(),
         )
@@ -238,7 +241,7 @@ pub(crate) async fn download_with_chunks(
 
     let writer = ctx
         .blob_cache
-        .start_write(ctx.expected_sha256)
+        .start_write(&expected_sha256)
         .map_err(Error::network("failed to create blob writer"))?;
 
     let expected_chunks: BTreeMap<u64, u64> = chunks.iter().map(|c| (c.offset, c.size)).collect();
@@ -373,9 +376,9 @@ pub(crate) async fn download_with_chunks(
 
     let actual_hash = format!("{:x}", hasher.finalize());
 
-    if actual_hash != ctx.expected_sha256 {
+    if actual_hash != expected_sha256 {
         return Err(Error::ChecksumMismatch {
-            expected: ctx.expected_sha256.to_string(),
+            expected: expected_sha256,
             actual: actual_hash,
         });
     }
@@ -448,7 +451,7 @@ mod tests {
             .and(path("/large.tar.gz"))
             .respond_with(
                 ResponseTemplate::new(200)
-                    .append_header("Accept-Ranges", "bytes")
+                    .append_header("Accept-Ranges", "Bytes")
                     .append_header("Content-Length", large_content.len().to_string()),
             )
             .mount(&mock_server)
@@ -495,7 +498,8 @@ mod tests {
         let downloader = Downloader::new(blob_cache);
 
         let url = format!("{}/large.tar.gz", mock_server.uri());
-        let result = downloader.download(&url, &actual_sha256).await;
+        let uppercase_sha256 = actual_sha256.to_uppercase();
+        let result = downloader.download(&url, &uppercase_sha256).await;
 
         assert!(result.is_ok(), "Download failed: {:?}", result.err());
         let blob_path = result.unwrap();

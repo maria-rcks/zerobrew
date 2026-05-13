@@ -24,7 +24,7 @@ pub fn verify_sha256_bytes(bytes: &[u8], expected_sha256: Option<&str>) -> Resul
     Ok(())
 }
 
-fn normalize_sha256(input: &str) -> Result<String, Error> {
+pub(crate) fn normalize_sha256(input: &str) -> Result<String, Error> {
     let normalized = input.trim().to_lowercase();
 
     if normalized.len() != 64 {
