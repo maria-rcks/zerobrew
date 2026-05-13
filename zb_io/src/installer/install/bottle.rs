@@ -531,6 +531,7 @@ mod tests {
                 source: "claude".to_string(),
                 target: "claude".to_string(),
             }],
+            apps: vec![],
         };
 
         stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap();
@@ -573,6 +574,7 @@ mod tests {
                     target: "b".to_string(),
                 },
             ],
+            apps: vec![],
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();
