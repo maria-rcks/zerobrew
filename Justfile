@@ -1,7 +1,7 @@
 set export
 set dotenv-load
 set unstable
-set script-interpreter := ['bash', '-euo', 'pipefail']
+set script-interpreter := ['/bin/bash', '-euo', 'pipefail']
 
 ZEROBREW_ROOT := if env('ZEROBREW_ROOT', '') != '' {
     env('ZEROBREW_ROOT')
@@ -56,13 +56,13 @@ install: build
     if [[ -d "$ZEROBREW_PREFIX/lib/pkgconfig" ]]; then
         export PKG_CONFIG_PATH="$ZEROBREW_PREFIX/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     fi
-    if [[ -d '/opt/homebrew/lib/pkgconfig' ]] && [[ ! "$PKG_CONFIG_PATH" =~ '/opt/homebrew/lib/pkgconfig' ]]; then
+    if [[ -d '/opt/homebrew/lib/pkgconfig' ]] && [[ ! "${PKG_CONFIG_PATH:-}" =~ '/opt/homebrew/lib/pkgconfig' ]]; then
         export PKG_CONFIG_PATH="/opt/homebrew/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
     fi
 
     mkdir -p "$ZEROBREW_BIN"
-    install -Dm755 target/debug/zb "$ZEROBREW_BIN/zb"
-    install -Dm755 target/debug/zbx "$ZEROBREW_BIN/zbx"
+    install -m755 target/debug/zb "$ZEROBREW_BIN/zb"
+    install -m755 target/debug/zbx "$ZEROBREW_BIN/zbx"
     echo "Installed zb to $ZEROBREW_BIN/zb"
     echo "Installed zbx to $ZEROBREW_BIN/zbx"
 
@@ -96,38 +96,33 @@ _clean_shell_config config:
     rm "$tmp_file"
     echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} Cleaned '"$config"''
 
-[private]
-[script]
-_confirm msg:
-    read -rp "{{msg}} [y/N] " confirm
-    if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        exit 0
-    else
-        exit 1
-    fi
-
 [doc('Uninstall zb and remove all data')]
 [group('install')]
 [script]
 uninstall:
-    mapfile -t configs_to_clean < <(just _get_zerobrew_configs)
+    configs_to_clean_file=$(mktemp)
+    trap 'rm -f "$configs_to_clean_file"' EXIT
+    just _get_zerobrew_configs > "$configs_to_clean_file"
 
     echo 'Running this will remove:'
     echo -en '{{BOLD}}{{RED}}'
     echo -e  "\t$ZEROBREW_INSTALLED_BIN"
     echo -e  "\t$ZEROBREW_DIR"
     echo -e  "\t$ZEROBREW_ROOT"
-    for config in "${configs_to_clean[@]}"; do
+    while IFS= read -r config; do
         echo -e "\tzerobrew entries in $config"
-    done
+    done < "$configs_to_clean_file"
     echo -en '{{NORMAL}}'
 
-    just _confirm "Continue?" || exit 0
+    read -rp "Continue? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        exit 0
+    fi
 
     # Clean shell configuration files
-    for config in "${configs_to_clean[@]}"; do
+    while IFS= read -r config; do
         just _clean_shell_config "$config"
-    done
+    done < "$configs_to_clean_file"
 
     [[ -f "$ZEROBREW_INSTALLED_BIN" ]] && rm -- "$ZEROBREW_INSTALLED_BIN"
     [[ -d "$ZEROBREW_DIR" ]] && rm -rf -- "$ZEROBREW_DIR"
@@ -145,23 +140,28 @@ uninstall:
 [group('install')]
 [script]
 reset:
-    mapfile -t configs_to_clean < <(just _get_zerobrew_configs)
+    configs_to_clean_file=$(mktemp)
+    trap 'rm -f "$configs_to_clean_file"' EXIT
+    just _get_zerobrew_configs > "$configs_to_clean_file"
 
     echo -e '{{BOLD}}{{YELLOW}}Warning:{{NORMAL}} This will reset zerobrew completely:'
     echo -en '{{BOLD}}{{RED}}'
     echo -e  "\t$ZEROBREW_DIR"
     echo -e  "\t$ZEROBREW_ROOT"
-    for config in "${configs_to_clean[@]}"; do
+    while IFS= read -r config; do
         echo -e "\tzerobrew entries in $config"
-    done
+    done < "$configs_to_clean_file"
     echo -en '{{NORMAL}}'
 
-    just _confirm "Continue?" || exit 0
+    read -rp "Continue? [y/N] " confirm
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        exit 0
+    fi
 
     # Clean shell configuration files
-    for config in "${configs_to_clean[@]}"; do
+    while IFS= read -r config; do
         just _clean_shell_config "$config"
-    done
+    done < "$configs_to_clean_file"
 
     [[ -d "$ZEROBREW_DIR" ]] && rm -rf -- "$ZEROBREW_DIR" && echo -e '{{BOLD}}{{GREEN}}✓{{NORMAL}} Removed '"$ZEROBREW_DIR"''
 
