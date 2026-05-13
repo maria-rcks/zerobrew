@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use tracing::warn;
 use zb_core::{Error, InstallMethod, formula_token};
@@ -11,6 +11,8 @@ use crate::network::download::{DownloadProgressCallback, DownloadRequest, Downlo
 use crate::progress::InstallProgress;
 
 use super::{Installer, MAX_CORRUPTION_RETRIES, PlannedInstall};
+
+const CASK_APPS_DIR: &str = "Applications";
 
 impl Installer {
     pub(super) async fn process_bottle_item(
@@ -250,7 +252,7 @@ impl Installer {
 
         if crate::extraction::is_archive(&blob_path)? {
             let extracted = self.store.ensure_entry(&cask.sha256, &blob_path)?;
-            stage_cask_binaries(&extracted, &keg_path, &cask)?;
+            stage_cask_artifacts(&extracted, &keg_path, &cask)?;
         } else {
             stage_raw_cask_binary(&blob_path, &keg_path, &cask)?;
         }
@@ -344,15 +346,20 @@ fn stage_cask_binaries(
     keg_path: &Path,
     cask: &crate::installer::cask::ResolvedCask,
 ) -> Result<(), Error> {
+    if cask.binaries.is_empty() {
+        return Ok(());
+    }
+
     let bin_dir = keg_path.join("bin");
     fs::create_dir_all(&bin_dir).map_err(Error::store("failed to create cask bin dir"))?;
 
     for binary in &cask.binaries {
-        let source = resolve_cask_source_path(extracted_root, cask, &binary.source)?;
+        let source =
+            resolve_cask_binary_source_path(extracted_root, keg_path, cask, &binary.source)?;
         if !source.exists() {
             return Err(Error::InvalidArgument {
                 message: format!(
-                    "cask '{}' binary source '{}' not found in archive",
+                    "cask '{}' binary source '{}' not found",
                     cask.token, binary.source
                 ),
             });
@@ -390,12 +397,11 @@ fn stage_raw_cask_binary(
     keg_path: &Path,
     cask: &crate::installer::cask::ResolvedCask,
 ) -> Result<(), Error> {
-    if cask.binaries.len() != 1 {
+    if !cask.apps.is_empty() || cask.binaries.len() != 1 {
         return Err(Error::InvalidArgument {
             message: format!(
-                "cask '{}' has {} binary artifacts but the download is a raw binary; expected exactly 1",
-                cask.token,
-                cask.binaries.len()
+                "cask '{}' has unsupported raw download layout; expected exactly 1 binary artifact and no app artifacts",
+                cask.token
             ),
         });
     }
@@ -423,20 +429,74 @@ fn stage_raw_cask_binary(
     Ok(())
 }
 
-fn resolve_cask_source_path(
+fn stage_cask_artifacts(
     extracted_root: &Path,
+    keg_path: &Path,
     cask: &crate::installer::cask::ResolvedCask,
-    source: &str,
-) -> Result<std::path::PathBuf, Error> {
-    if source.starts_with("$APPDIR") {
-        return Err(Error::InvalidArgument {
-            message: format!(
-                "cask '{}' uses APPDIR artifacts which are not supported yet",
-                cask.token
-            ),
-        });
+) -> Result<(), Error> {
+    stage_cask_apps(extracted_root, keg_path, cask)?;
+    stage_cask_binaries(extracted_root, keg_path, cask)?;
+    Ok(())
+}
+
+fn stage_cask_apps(
+    extracted_root: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.apps.is_empty() {
+        return Ok(());
     }
 
+    let apps_dir = keg_path.join(CASK_APPS_DIR);
+    fs::create_dir_all(&apps_dir).map_err(Error::store("failed to create cask app dir"))?;
+
+    for app in &cask.apps {
+        let source = resolve_relative_cask_path(extracted_root, cask, &app.source, "app")?;
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' app source '{}' not found in archive",
+                    cask.token, app.source
+                ),
+            });
+        }
+
+        let target = apps_dir.join(&app.target);
+        if target.symlink_metadata().is_ok() {
+            remove_path_any(&target)
+                .map_err(Error::store("failed to replace existing cask app"))?;
+        }
+
+        copy_path_recursive(&source, &target)?;
+    }
+
+    Ok(())
+}
+
+fn resolve_cask_binary_source_path(
+    extracted_root: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+    source: &str,
+) -> Result<PathBuf, Error> {
+    if source.starts_with("$APPDIR") {
+        let relative = source
+            .strip_prefix("$APPDIR/")
+            .or_else(|| source.strip_prefix("$APPDIR"))
+            .unwrap_or(source);
+        return resolve_relative_cask_path(&keg_path.join(CASK_APPS_DIR), cask, relative, "binary");
+    }
+
+    resolve_relative_cask_path(extracted_root, cask, source, "binary")
+}
+
+fn resolve_relative_cask_path(
+    root: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+    source: &str,
+    artifact_kind: &str,
+) -> Result<PathBuf, Error> {
     let mut normalized = source.to_string();
     let caskroom_prefix = format!("$HOMEBREW_PREFIX/Caskroom/{}/{}/", cask.token, cask.version);
     if let Some(stripped) = normalized.strip_prefix(&caskroom_prefix) {
@@ -447,7 +507,7 @@ fn resolve_cask_source_path(
     if source_path.is_absolute() {
         return Err(Error::InvalidArgument {
             message: format!(
-                "cask '{}' binary source '{}' must be a relative path",
+                "cask '{}' {artifact_kind} source '{}' must be a relative path",
                 cask.token, source
             ),
         });
@@ -457,14 +517,50 @@ fn resolve_cask_source_path(
         if matches!(component, std::path::Component::ParentDir) {
             return Err(Error::InvalidArgument {
                 message: format!(
-                    "cask '{}' binary source '{}' cannot contain '..'",
+                    "cask '{}' {artifact_kind} source '{}' cannot contain '..'",
                     cask.token, source
                 ),
             });
         }
     }
 
-    Ok(extracted_root.join(source_path))
+    Ok(root.join(source_path))
+}
+
+fn copy_path_recursive(src: &Path, dst: &Path) -> Result<(), Error> {
+    let metadata =
+        fs::symlink_metadata(src).map_err(Error::store("failed to read source metadata"))?;
+
+    if metadata.file_type().is_symlink() {
+        let target = fs::read_link(src).map_err(Error::store("failed to read source symlink"))?;
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(target, dst)
+            .map_err(Error::store("failed to create symlink"))?;
+        #[cfg(not(unix))]
+        fs::copy(src, dst).map_err(Error::store("failed to copy symlink as file"))?;
+        return Ok(());
+    }
+
+    if metadata.is_dir() {
+        fs::create_dir_all(dst).map_err(Error::store("failed to create target directory"))?;
+        for entry in fs::read_dir(src).map_err(Error::store("failed to read source directory"))? {
+            let entry = entry.map_err(Error::store("failed to read source directory entry"))?;
+            copy_path_recursive(&entry.path(), &dst.join(entry.file_name()))?;
+        }
+        return Ok(());
+    }
+
+    fs::copy(src, dst).map_err(Error::store("failed to copy file"))?;
+    Ok(())
+}
+
+fn remove_path_any(path: &Path) -> std::io::Result<()> {
+    let metadata = fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() || metadata.is_file() {
+        fs::remove_file(path)
+    } else {
+        fs::remove_dir_all(path)
+    }
 }
 
 #[cfg(test)]
@@ -578,6 +674,51 @@ mod tests {
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();
-        assert!(err.to_string().contains("raw binary"));
+        assert!(err.to_string().contains("unsupported raw download layout"));
+    }
+
+    #[test]
+    fn stage_cask_artifacts_supports_appdir_binary_sources() {
+        let tmp = TempDir::new().unwrap();
+        let extracted_root = tmp.path().join("extract");
+        let app_binary_dir =
+            extracted_root.join("Visual Studio Code.app/Contents/Resources/app/bin");
+        fs::create_dir_all(&app_binary_dir).unwrap();
+        fs::write(app_binary_dir.join("code"), b"#!/bin/sh\necho code").unwrap();
+        fs::write(
+            extracted_root.join("Visual Studio Code.app/Contents/Info.plist"),
+            b"plist",
+        )
+        .unwrap();
+
+        let keg_path = tmp.path().join("keg");
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:visual-studio-code".to_string(),
+            token: "visual-studio-code".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/vscode.zip".to_string(),
+            sha256: "ccc".to_string(),
+            binaries: vec![crate::installer::cask::CaskBinary {
+                source: "$APPDIR/Visual Studio Code.app/Contents/Resources/app/bin/code"
+                    .to_string(),
+                target: "code".to_string(),
+            }],
+            apps: vec![crate::installer::cask::CaskApp {
+                source: "Visual Studio Code.app".to_string(),
+                target: "Visual Studio Code.app".to_string(),
+            }],
+        };
+
+        stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(keg_path.join("bin/code")).unwrap(),
+            "#!/bin/sh\necho code"
+        );
+        assert!(
+            keg_path
+                .join("Applications/Visual Studio Code.app/Contents/Info.plist")
+                .exists()
+        );
     }
 }
