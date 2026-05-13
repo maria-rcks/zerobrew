@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 struct TestEnv {
@@ -52,18 +52,39 @@ impl TestEnv {
 
     fn run_binary(&self, name: &str, args: &[&str]) -> Output {
         let bin_path = self.bin_dir().join(name);
-        Command::new(&bin_path)
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    self.bin_dir().display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            )
-            .args(args)
+        let mut cmd = self.runtime_command(&bin_path, &self.bin_dir());
+        cmd.args(args)
             .output()
             .unwrap_or_else(|e| panic!("failed to execute {}: {e}", bin_path.display()))
+    }
+
+    fn runtime_command(&self, bin_path: &Path, bin_dir: &Path) -> Command {
+        let prefix = self.prefix();
+        let mut cmd = Command::new(bin_path);
+
+        cmd.env(
+            "PATH",
+            format!(
+                "{}:{}",
+                bin_dir.display(),
+                std::env::var("PATH").unwrap_or_default()
+            ),
+        )
+        .env("ZEROBREW_ROOT", self.root.path())
+        .env("ZEROBREW_PREFIX", &prefix)
+        .env("HOMEBREW_PREFIX", &prefix)
+        .env("HOMEBREW_CELLAR", prefix.join("Cellar"));
+
+        if let Some(ca_bundle) = zb_io::find_ca_bundle_from_prefix(&prefix) {
+            cmd.env("CURL_CA_BUNDLE", &ca_bundle);
+            cmd.env("SSL_CERT_FILE", &ca_bundle);
+        }
+
+        if let Some(ca_dir) = zb_io::find_ca_dir(&prefix) {
+            cmd.env("SSL_CERT_DIR", &ca_dir);
+        }
+
+        cmd
     }
 
     /// Find a binary inside the cellar (for keg-only formulas that aren't linked).
@@ -82,16 +103,11 @@ impl TestEnv {
 
     fn run_cellar_binary(&self, formula: &str, binary: &str, args: &[&str]) -> Output {
         let bin_path = self.cellar_binary(formula, binary);
-        Command::new(&bin_path)
-            .env(
-                "PATH",
-                format!(
-                    "{}:{}",
-                    bin_path.parent().unwrap().display(),
-                    std::env::var("PATH").unwrap_or_default()
-                ),
-            )
-            .args(args)
+        let bin_dir = bin_path
+            .parent()
+            .unwrap_or_else(|| panic!("cellar binary has no parent: {}", bin_path.display()));
+        let mut cmd = self.runtime_command(&bin_path, bin_dir);
+        cmd.args(args)
             .output()
             .unwrap_or_else(|e| panic!("failed to execute {}: {e}", bin_path.display()))
     }
