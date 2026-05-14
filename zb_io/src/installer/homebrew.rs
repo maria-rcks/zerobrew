@@ -8,15 +8,16 @@ pub struct HomebrewPackage {
     pub name: String,
     pub tap: String,
     pub is_cask: bool,
+    pub cask_json: Option<serde_json::Value>,
 }
 
 /// Result of collecting Homebrew packages for migration
 pub struct HomebrewMigrationPackages {
     /// Formulas from homebrew/core that can be migrated
     pub formulas: Vec<HomebrewPackage>,
-    /// Formulas from non-core taps that cannot be migrated
+    /// Formulas from non-core taps that can be migrated by full tap reference
     pub non_core_formulas: Vec<HomebrewPackage>,
-    /// Cask packages that cannot be migrated
+    /// Cask packages that can be migrated from installed cask JSON
     pub casks: Vec<HomebrewPackage>,
 }
 
@@ -32,11 +33,17 @@ pub fn parse_formulas_from_json(json: &serde_json::Value) -> Vec<HomebrewPackage
                     .and_then(|t| t.as_str())
                     .unwrap_or("homebrew/core")
                     .to_string();
+                let full_name = formula
+                    .get("full_name")
+                    .and_then(|n| n.as_str())
+                    .filter(|_| tap != "homebrew/core")
+                    .unwrap_or(name);
 
                 packages.push(HomebrewPackage {
-                    name: name.to_string(),
+                    name: full_name.to_string(),
                     tap,
                     is_cask: false,
+                    cask_json: None,
                 });
             }
         }
@@ -64,8 +71,35 @@ pub fn parse_casks_from_plain_text(output: &str) -> Vec<HomebrewPackage> {
             name: name.to_string(),
             tap: "homebrew/cask".to_string(),
             is_cask: true,
+            cask_json: None,
         })
         .collect()
+}
+
+/// Parse Homebrew casks from JSON output of `brew info --cask --json=v2 --installed`.
+pub fn parse_casks_from_json(json: &serde_json::Value) -> Vec<HomebrewPackage> {
+    let mut packages = Vec::new();
+
+    if let Some(casks) = json.get("casks").and_then(|c| c.as_array()) {
+        for cask in casks {
+            if let Some(token) = cask.get("token").and_then(|t| t.as_str()) {
+                let tap = cask
+                    .get("tap")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or("homebrew/cask")
+                    .to_string();
+
+                packages.push(HomebrewPackage {
+                    name: token.to_string(),
+                    tap,
+                    is_cask: true,
+                    cask_json: Some(cask.clone()),
+                });
+            }
+        }
+    }
+
+    packages
 }
 
 /// Categorize Homebrew packages for migration
@@ -98,56 +132,38 @@ pub fn categorize_packages(packages: Vec<HomebrewPackage>) -> HomebrewMigrationP
 
 /// Get all installed Homebrew packages, categorized for migration
 ///
-/// Only formulas from `homebrew/core` can be migrated to zerobrew.
-/// Formulas from other taps and all casks are collected separately.
-/// Only leaves are migrated, as there's no use to reinstalling dependencies.
+/// All installed formulas and casks are collected. Formula dependencies are
+/// included so the zerobrew database can represent the complete migrated state.
 pub fn get_homebrew_packages() -> Result<HomebrewMigrationPackages, Error> {
-    let leaves_output = Command::new("brew")
-        .args(["leaves"])
+    let formulas_output = Command::new("brew")
+        .args(["info", "--json=v1", "--installed"])
         .output()
-        .map_err(Error::exec("failed to run 'brew leaves'"))?;
+        .map_err(Error::exec("failed to run 'brew info --installed'"))?;
 
-    if !leaves_output.status.success() {
-        return Err((Error::exec("brew leaves failed"))(
-            String::from_utf8_lossy(&leaves_output.stderr),
+    if !formulas_output.status.success() {
+        return Err((Error::exec("brew info --installed failed"))(
+            String::from_utf8_lossy(&formulas_output.stderr),
         ));
     }
 
-    let leaves = parse_leaves_from_plain_text(&String::from_utf8_lossy(&leaves_output.stdout));
-
-    let formulas = if leaves.is_empty() {
-        Vec::new()
-    } else {
-        let formulas_output = Command::new("brew")
-            .args(["info", "--json=v1"])
-            .args(&leaves)
-            .output()
-            .map_err(Error::exec("failed to run 'brew info'"))?;
-
-        if !formulas_output.status.success() {
-            return Err((Error::exec("brew info failed"))(String::from_utf8_lossy(
-                &formulas_output.stderr,
-            )));
-        }
-
-        let formulas_json: serde_json::Value = serde_json::from_slice(&formulas_output.stdout)
-            .map_err(Error::exec("failed to parse brew info JSON"))?;
-
-        parse_formulas_from_json(&formulas_json)
-    };
+    let formulas_json: serde_json::Value = serde_json::from_slice(&formulas_output.stdout)
+        .map_err(Error::exec("failed to parse brew info JSON"))?;
+    let formulas = parse_formulas_from_json(&formulas_json);
 
     let casks_output = Command::new("brew")
-        .args(["list", "--cask"])
+        .args(["info", "--cask", "--json=v2", "--installed"])
         .output()
-        .map_err(Error::exec("failed to run 'brew list --cask'"))?;
+        .map_err(Error::exec("failed to run 'brew info --cask --installed'"))?;
 
     if !casks_output.status.success() {
-        return Err((Error::exec("brew list --cask failed"))(
+        return Err((Error::exec("brew info --cask --installed failed"))(
             String::from_utf8_lossy(&casks_output.stderr),
         ));
     }
 
-    let casks = parse_casks_from_plain_text(&String::from_utf8_lossy(&casks_output.stdout));
+    let casks_json: serde_json::Value = serde_json::from_slice(&casks_output.stdout)
+        .map_err(Error::exec("failed to parse brew cask info JSON"))?;
+    let casks = parse_casks_from_json(&casks_json);
 
     let all_packages: Vec<HomebrewPackage> = formulas.into_iter().chain(casks).collect();
     Ok(categorize_packages(all_packages))
@@ -183,6 +199,24 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_formulas_uses_full_name_for_tapped_formula() {
+        let brew_output = r#"[
+            {
+                "name": "terraform",
+                "full_name": "hashicorp/tap/terraform",
+                "tap": "hashicorp/tap"
+            }
+        ]"#;
+
+        let formulas_json: serde_json::Value = serde_json::from_str(brew_output).unwrap();
+        let packages = parse_formulas_from_json(&formulas_json);
+
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "hashicorp/tap/terraform");
+        assert_eq!(packages[0].tap, "hashicorp/tap");
+    }
+
+    #[test]
     fn test_parse_formulas_handles_missing_tap() {
         let brew_output = r#"[
             {"name": "no-tap-formula"}
@@ -209,6 +243,29 @@ mod tests {
         assert!(packages[0].is_cask);
         assert_eq!(packages[1].name, "firefox");
         assert!(packages[1].is_cask);
+    }
+
+    #[test]
+    fn test_parse_casks_from_json_keeps_installed_json() {
+        let brew_output = r#"{
+            "casks": [
+                {
+                    "token": "font-test",
+                    "tap": "homebrew/cask",
+                    "version": "1.0.0",
+                    "artifacts": [{"font": ["Test.otf"]}]
+                }
+            ]
+        }"#;
+
+        let casks_json: serde_json::Value = serde_json::from_str(brew_output).unwrap();
+        let packages = parse_casks_from_json(&casks_json);
+
+        assert_eq!(packages.len(), 1);
+        assert_eq!(packages[0].name, "font-test");
+        assert_eq!(packages[0].tap, "homebrew/cask");
+        assert!(packages[0].is_cask);
+        assert!(packages[0].cask_json.is_some());
     }
 
     #[test]
@@ -249,11 +306,13 @@ mod tests {
                 name: "git".to_string(),
                 tap: "homebrew/core".to_string(),
                 is_cask: false,
+                cask_json: None,
             },
             HomebrewPackage {
                 name: "curl".to_string(),
                 tap: "homebrew/core".to_string(),
                 is_cask: false,
+                cask_json: None,
             },
         ];
 
@@ -271,11 +330,13 @@ mod tests {
                 name: "php".to_string(),
                 tap: "shivammathur/php".to_string(),
                 is_cask: false,
+                cask_json: None,
             },
             HomebrewPackage {
                 name: "mysql".to_string(),
                 tap: "homebrew/mysql".to_string(),
                 is_cask: false,
+                cask_json: None,
             },
         ];
 
@@ -293,11 +354,13 @@ mod tests {
                 name: "visual-studio-code".to_string(),
                 tap: "homebrew/cask".to_string(),
                 is_cask: true,
+                cask_json: None,
             },
             HomebrewPackage {
                 name: "firefox".to_string(),
                 tap: "homebrew/cask".to_string(),
                 is_cask: true,
+                cask_json: None,
             },
         ];
 
@@ -315,16 +378,19 @@ mod tests {
                 name: "git".to_string(),
                 tap: "homebrew/core".to_string(),
                 is_cask: false,
+                cask_json: None,
             },
             HomebrewPackage {
                 name: "php".to_string(),
                 tap: "homebrew/php".to_string(),
                 is_cask: false,
+                cask_json: None,
             },
             HomebrewPackage {
                 name: "visual-studio-code".to_string(),
                 tap: "homebrew/cask".to_string(),
                 is_cask: true,
+                cask_json: None,
             },
         ];
 
@@ -346,6 +412,7 @@ mod tests {
             name: "test-formula".to_string(),
             tap: "homebrew/core".to_string(),
             is_cask: false,
+            cask_json: None,
         };
 
         assert_eq!(pkg.name, "test-formula");
@@ -356,6 +423,7 @@ mod tests {
             name: "test-cask".to_string(),
             tap: "homebrew/cask".to_string(),
             is_cask: true,
+            cask_json: None,
         };
 
         assert!(cask.is_cask);

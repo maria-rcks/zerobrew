@@ -11,6 +11,7 @@ use std::sync::Arc;
 
 use fs4::fs_std::FileExt;
 use tracing::warn;
+use zb_core::formula_token;
 
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
@@ -261,6 +262,9 @@ impl Installer {
     ) -> Result<ExecuteResult, Error> {
         let mut installed = 0usize;
         for name in names {
+            if self.is_installed(name) {
+                continue;
+            }
             let token = name
                 .strip_prefix("cask:")
                 .expect("install_casks expects cask: prefixed names");
@@ -270,8 +274,41 @@ impl Installer {
         Ok(ExecuteResult { installed })
     }
 
+    pub async fn install_casks_from_json(
+        &mut self,
+        casks: &[(String, serde_json::Value)],
+        link: bool,
+    ) -> Result<ExecuteResult, Error> {
+        let mut installed = 0usize;
+        let mut first_error = None;
+        for (token, cask_json) in casks {
+            if self.is_installed(&format!("cask:{token}")) {
+                continue;
+            }
+            match self
+                .install_single_cask_from_json(token, cask_json.clone(), link)
+                .await
+            {
+                Ok(()) => installed += 1,
+                Err(e) => {
+                    if first_error.is_none() {
+                        first_error = Some(e);
+                    }
+                }
+            }
+        }
+
+        if let Some(e) = first_error {
+            return Err(e);
+        }
+
+        Ok(ExecuteResult { installed })
+    }
+
     pub fn is_installed(&self, name: &str) -> bool {
-        self.db.get_installed(name).is_some()
+        self.db
+            .get_installed(name)
+            .is_some_and(|installed| self.installed_keg_exists(&installed))
     }
 
     pub fn get_installed(&self, name: &str) -> Option<crate::storage::db::InstalledKeg> {
@@ -284,6 +321,12 @@ impl Installer {
 
     pub fn keg_path(&self, name: &str, version: &str) -> PathBuf {
         self.cellar.keg_path(name, version)
+    }
+
+    fn installed_keg_exists(&self, installed: &crate::storage::db::InstalledKeg) -> bool {
+        self.cellar
+            .keg_path(formula_token(&installed.name), &installed.version)
+            .exists()
     }
 
     fn cleanup_materialized(cellar: &Cellar, name: &str, version: &str) {
@@ -1159,5 +1202,41 @@ end
     async fn fails_after_max_retries() {
         // Validates the retry mechanism structure -- proper integration test
         // would need injection of corruption between download and extraction.
+    }
+
+    #[test]
+    fn is_installed_ignores_stale_database_records() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client =
+            ApiClient::with_base_url("http://127.0.0.1:1/formula".to_string()).unwrap();
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let mut db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        {
+            let tx = db.transaction().unwrap();
+            tx.record_install("cask:stale", "1.0.0", "deadbeef")
+                .unwrap();
+            tx.commit().unwrap();
+        }
+
+        let installer = Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix,
+            root.join("locks"),
+        );
+
+        assert!(!installer.is_installed("cask:stale"));
     }
 }

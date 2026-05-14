@@ -31,40 +31,53 @@ pub async fn execute(
     .map_err(ui_error)?;
     ui.blank_line().map_err(ui_error)?;
 
-    if !packages.non_core_formulas.is_empty() {
-        ui.note("Formulas from non-core taps cannot be migrated to zerobrew:")
+    let formula_names: Vec<String> = packages
+        .formulas
+        .iter()
+        .chain(&packages.non_core_formulas)
+        .map(|f| f.name.clone())
+        .collect();
+    let cask_jsons: Vec<(String, serde_json::Value)> = packages
+        .casks
+        .iter()
+        .filter_map(|cask| cask.cask_json.clone().map(|json| (cask.name.clone(), json)))
+        .collect();
+    let cask_install_names: Vec<String> = packages
+        .casks
+        .iter()
+        .map(|cask| format!("cask:{}", cask.name))
+        .collect();
+
+    if formula_names.is_empty() && cask_install_names.is_empty() {
+        ui.println("No supported Homebrew packages to migrate.")
             .map_err(ui_error)?;
-        for pkg in &packages.non_core_formulas {
-            ui.bullet(format!("{} ({})", pkg.name, pkg.tap))
-                .map_err(ui_error)?;
+        return Ok(());
+    }
+
+    if !formula_names.is_empty() {
+        ui.println(format!(
+            "The following {} formulas will be migrated:",
+            formula_names.len()
+        ))
+        .map_err(ui_error)?;
+        for name in &formula_names {
+            ui.bullet(name).map_err(ui_error)?;
         }
         ui.blank_line().map_err(ui_error)?;
     }
 
     if !packages.casks.is_empty() {
-        ui.note("Casks cannot be migrated to zerobrew (only CLI formulas are supported):")
-            .map_err(ui_error)?;
+        ui.println(format!(
+            "The following {} casks will be migrated:",
+            packages.casks.len()
+        ))
+        .map_err(ui_error)?;
         for cask in &packages.casks {
-            ui.bullet(&cask.name).map_err(ui_error)?;
+            ui.bullet(format!("{} ({})", cask.name, cask.tap))
+                .map_err(ui_error)?;
         }
         ui.blank_line().map_err(ui_error)?;
     }
-
-    if packages.formulas.is_empty() {
-        ui.println("No core formulas to migrate.")
-            .map_err(ui_error)?;
-        return Ok(());
-    }
-
-    ui.println(format!(
-        "The following {} formulas will be migrated:",
-        packages.formulas.len()
-    ))
-    .map_err(ui_error)?;
-    for pkg in &packages.formulas {
-        ui.bullet(&pkg.name).map_err(ui_error)?;
-    }
-    ui.blank_line().map_err(ui_error)?;
 
     if !yes
         && !ui
@@ -77,38 +90,54 @@ pub async fn execute(
 
     ui.blank_line().map_err(ui_error)?;
     ui.heading(format!(
-        "Migrating {} formulas to zerobrew...",
-        style(packages.formulas.len()).green().bold()
+        "Migrating {} packages to zerobrew...",
+        style(formula_names.len() + cask_install_names.len())
+            .green()
+            .bold()
     ))
     .map_err(ui_error)?;
 
-    let formula_names: Vec<String> = packages.formulas.iter().map(|f| f.name.clone()).collect();
+    if !formula_names.is_empty() {
+        crate::commands::install::execute(
+            installer,
+            formula_names.clone(),
+            false, // no_link
+            false, // build_from_source
+            ui,
+        )
+        .await
+        .ok();
+    }
 
-    crate::commands::install::execute(
-        installer,
-        formula_names.clone(),
-        false, // no_link
-        false, // build_from_source
-        ui,
-    )
-    .await
-    .ok();
+    if !cask_jsons.is_empty() {
+        ui.heading(format!(
+            "Installing casks ({} packages)...",
+            cask_jsons.len()
+        ))
+        .map_err(ui_error)?;
+        if let Err(e) = installer.install_casks_from_json(&cask_jsons, true).await {
+            ui.error(format!("Cask migration hit an error: {e}"))
+                .map_err(ui_error)?;
+        }
+    }
 
+    let mut expected_names = formula_names.clone();
+    expected_names.extend(cask_install_names.clone());
     let (successfully_installed, failed_installed) =
-        check_install_status(installer, &formula_names)?;
+        check_install_status(installer, &expected_names)?;
     let success_count = successfully_installed.len();
 
     ui.blank_line().map_err(ui_error)?;
     ui.heading(format!(
-        "Migrated {} of {} formulas to zerobrew",
+        "Migrated {} of {} packages to zerobrew",
         style(success_count).green().bold(),
-        packages.formulas.len()
+        expected_names.len()
     ))
     .map_err(ui_error)?;
 
     if !failed_installed.is_empty() {
         ui.note(format!(
-            "Failed to migrate {} formula(s):",
+            "Failed to migrate {} package(s):",
             failed_installed.len()
         ))
         .map_err(ui_error)?;
@@ -119,7 +148,7 @@ pub async fn execute(
     }
 
     if success_count == 0 {
-        ui.println("No formulas were successfully migrated. Skipping uninstall from Homebrew.")
+        ui.println("No packages were successfully migrated. Skipping uninstall from Homebrew.")
             .map_err(ui_error)?;
         return Ok(());
     }
@@ -129,7 +158,7 @@ pub async fn execute(
         && !ui
             .prompt_yes_no(
                 &format!(
-                    "Uninstall {} formula(s) from Homebrew? [y/N]",
+                    "Uninstall {} package(s) from Homebrew? [y/N]",
                     style(success_count).green()
                 ),
                 PromptDefault::No,
@@ -145,55 +174,12 @@ pub async fn execute(
     ui.heading("Uninstalling from Homebrew...")
         .map_err(ui_error)?;
 
-    if successfully_installed.is_empty() {
-        return Ok(());
-    }
-
-    ui.step_start(format!(
-        "uninstalling {} formulas combined",
-        successfully_installed.len()
-    ))
-    .map_err(ui_error)?;
-
-    let mut args = vec!["uninstall"];
-    if force {
-        args.push("--force");
-    }
-    for target in &successfully_installed {
-        args.push(target);
-    }
-
-    let status = Command::new("brew")
-        .args(&args)
-        .status()
-        .map_err(|e| format!("Failed to run brew uninstall: {}", e));
-
-    let uninstall_failed = match status {
-        Ok(s) if s.success() => {
-            ui.step_ok().map_err(ui_error)?;
-            Vec::new()
-        }
-        res => {
-            ui.step_fail().map_err(ui_error)?;
-            if let Err(e) = res {
-                ui.error(e).map_err(ui_error)?;
-            }
-            let mut actually_failed = successfully_installed.clone();
-            if let Ok(output) = Command::new("brew").args(["list", "--formula"]).output()
-                && output.status.success()
-            {
-                let stdout = String::from_utf8_lossy(&output.stdout);
-                let still_installed: std::collections::HashSet<&str> = stdout.lines().collect();
-                actually_failed.retain(|target| still_installed.contains(target.as_str()));
-            }
-            actually_failed
-        }
-    };
+    let uninstall_failed = uninstall_homebrew_packages(&successfully_installed, force, ui)?;
 
     let uninstalled = successfully_installed.len() - uninstall_failed.len();
     ui.blank_line().map_err(ui_error)?;
     ui.heading(format!(
-        "Uninstalled {} of {} formula(s) from Homebrew",
+        "Uninstalled {} of {} package(s) from Homebrew",
         style(uninstalled).green().bold(),
         success_count
     ))
@@ -201,7 +187,7 @@ pub async fn execute(
 
     if !uninstall_failed.is_empty() {
         ui.note(format!(
-            "Failed to uninstall {} formula(s) from Homebrew:",
+            "Failed to uninstall {} package(s) from Homebrew:",
             uninstall_failed.len()
         ))
         .map_err(ui_error)?;
@@ -212,9 +198,99 @@ pub async fn execute(
             .map_err(ui_error)?;
         ui.println("    brew uninstall --force <formula>")
             .map_err(ui_error)?;
+        ui.println("    brew uninstall --cask --force <cask>")
+            .map_err(ui_error)?;
     }
 
     Ok(())
+}
+
+fn uninstall_homebrew_packages(
+    installed: &[String],
+    force: bool,
+    ui: &mut StdUi,
+) -> Result<Vec<String>, zb_core::Error> {
+    let (casks, formulas): (Vec<_>, Vec<_>) = installed
+        .iter()
+        .cloned()
+        .partition(|name| name.starts_with("cask:"));
+    let mut failed = Vec::new();
+
+    if !formulas.is_empty() {
+        ui.step_start(format!("uninstalling {} formulas combined", formulas.len()))
+            .map_err(ui_error)?;
+        let mut args = vec!["uninstall"];
+        if force {
+            args.push("--force");
+        }
+        for target in &formulas {
+            args.push(target);
+        }
+
+        match Command::new("brew").args(&args).status() {
+            Ok(status) if status.success() => ui.step_ok().map_err(ui_error)?,
+            Ok(_) | Err(_) => {
+                ui.step_fail().map_err(ui_error)?;
+                failed.extend(still_installed_formulas(&formulas));
+            }
+        }
+    }
+
+    if !casks.is_empty() {
+        ui.step_start(format!("uninstalling {} casks combined", casks.len()))
+            .map_err(ui_error)?;
+        let cask_tokens: Vec<String> = casks
+            .iter()
+            .map(|name| name.trim_start_matches("cask:").to_string())
+            .collect();
+        let mut args = vec!["uninstall", "--cask"];
+        if force {
+            args.push("--force");
+        }
+        for target in &cask_tokens {
+            args.push(target);
+        }
+
+        match Command::new("brew").args(&args).status() {
+            Ok(status) if status.success() => ui.step_ok().map_err(ui_error)?,
+            Ok(_) | Err(_) => {
+                ui.step_fail().map_err(ui_error)?;
+                failed.extend(
+                    still_installed_casks(&cask_tokens)
+                        .into_iter()
+                        .map(|name| format!("cask:{name}")),
+                );
+            }
+        }
+    }
+
+    Ok(failed)
+}
+
+fn still_installed_formulas(targets: &[String]) -> Vec<String> {
+    let mut actually_failed = targets.to_vec();
+    if let Ok(output) = Command::new("brew")
+        .args(["list", "--formula", "--full-name"])
+        .output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let still_installed: std::collections::HashSet<&str> = stdout.lines().collect();
+        actually_failed.retain(|target| still_installed.contains(target.as_str()));
+    }
+    actually_failed
+}
+
+fn still_installed_casks(targets: &[String]) -> Vec<String> {
+    let mut actually_failed = targets.to_vec();
+    if let Ok(output) = Command::new("brew").args(["list", "--cask"]).output()
+        && output.status.success()
+    {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let still_installed: std::collections::HashSet<&str> = stdout.lines().collect();
+        actually_failed.retain(|target| still_installed.contains(target.as_str()));
+    }
+    actually_failed
 }
 
 // FIXME: Abstract this return type to a more structured type (e.g., a struct)
@@ -225,20 +301,11 @@ fn check_install_status(
     let mut successfully_installed = Vec::new();
     let mut failed_installed = Vec::new();
 
-    let installed_kegs =
-        installer
-            .list_installed()
-            .map_err(|e| zb_core::Error::StoreCorruption {
-                message: format!("Failed to verify installation status: {}", e),
-            })?;
-
-    let installed_names: std::collections::HashSet<String> =
-        installed_kegs.into_iter().map(|k| k.name).collect();
     for name in formula_names {
-        if !installed_names.contains(name) {
-            failed_installed.push(name.clone());
-        } else {
+        if installer.is_installed(name) {
             successfully_installed.push(name.clone());
+        } else {
+            failed_installed.push(name.clone());
         }
     }
 

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use tracing::warn;
 use zb_core::{Error, InstallMethod, formula_token};
@@ -9,10 +10,12 @@ use crate::cellar::materialize::Cellar;
 use crate::installer::cask::resolve_cask;
 use crate::network::download::{DownloadProgressCallback, DownloadRequest, DownloadResult};
 use crate::progress::InstallProgress;
+use crate::storage::store::Store;
 
 use super::{Installer, MAX_CORRUPTION_RETRIES, PlannedInstall};
 
 const CASK_APPS_DIR: &str = "Applications";
+const CASK_FONTS_DIR: &str = "Fonts";
 
 impl Installer {
     pub(super) async fn process_bottle_item(
@@ -63,6 +66,8 @@ impl Installer {
         if let Err(e) = self.linker.link_opt(&keg_path) {
             warn!(formula = %install_name, error = %e, "failed to create opt link");
         }
+
+        run_builtin_post_install(&self.prefix, install_name, &keg_path)?;
 
         if link && !item.formula.is_keg_only() {
             report(InstallProgress::LinkStarted {
@@ -235,6 +240,16 @@ impl Installer {
         link: bool,
     ) -> Result<(), Error> {
         let cask_json = self.api_client.get_cask(token).await?;
+        self.install_single_cask_from_json(token, cask_json, link)
+            .await
+    }
+
+    pub(super) async fn install_single_cask_from_json(
+        &mut self,
+        token: &str,
+        cask_json: serde_json::Value,
+        link: bool,
+    ) -> Result<(), Error> {
         let cask = resolve_cask(token, &cask_json)?;
 
         let blob_path = self
@@ -262,13 +277,18 @@ impl Installer {
         if crate::extraction::is_archive(&blob_path)? {
             let extracted = self.store.ensure_entry(&cask.sha256, &blob_path)?;
             stage_cask_artifacts(&extracted, &keg_path, &cask)?;
+        } else if is_dmg_cask(&blob_path, &cask) {
+            let extracted = ensure_dmg_store_entry(&self.store, &cask.sha256, &blob_path)?;
+            stage_cask_artifacts(&extracted, &keg_path, &cask)?;
         } else {
-            stage_raw_cask_binary(&blob_path, &keg_path, &cask)?;
+            let stored = ensure_raw_cask_store_entry(&self.store, &cask.sha256, &blob_path, &cask)?;
+            copy_path_recursive(&stored, &keg_path)?;
         }
 
         let linked_files = if link {
             let linked_files = self.linker.link_keg(&keg_path)?;
             link_cask_apps(&keg_path, self.app_dir(), &cask)?;
+            link_cask_fonts(&keg_path, &default_font_dir(), &cask)?;
             linked_files
         } else {
             Vec::new()
@@ -408,10 +428,10 @@ fn stage_raw_cask_binary(
     keg_path: &Path,
     cask: &crate::installer::cask::ResolvedCask,
 ) -> Result<(), Error> {
-    if !cask.apps.is_empty() || cask.binaries.len() != 1 {
+    if !cask.apps.is_empty() || !cask.fonts.is_empty() || cask.binaries.len() != 1 {
         return Err(Error::InvalidArgument {
             message: format!(
-                "cask '{}' has unsupported raw download layout; expected exactly 1 binary artifact and no app artifacts",
+                "cask '{}' has unsupported raw download layout; expected exactly 1 binary artifact and no app/font artifacts",
                 cask.token
             ),
         });
@@ -446,8 +466,213 @@ fn stage_cask_artifacts(
     cask: &crate::installer::cask::ResolvedCask,
 ) -> Result<(), Error> {
     stage_cask_apps(extracted_root, keg_path, cask)?;
+    stage_cask_fonts(extracted_root, keg_path, cask)?;
     stage_cask_binaries(extracted_root, keg_path, cask)?;
     Ok(())
+}
+
+fn is_dmg_cask(blob_path: &Path, cask: &crate::installer::cask::ResolvedCask) -> bool {
+    blob_path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("dmg"))
+        || cask
+            .url
+            .split(['?', '#'])
+            .next()
+            .is_some_and(|url_path| url_path.to_ascii_lowercase().ends_with(".dmg"))
+}
+
+#[cfg(target_os = "macos")]
+fn ensure_dmg_store_entry(
+    store: &Store,
+    store_key: &str,
+    dmg_path: &Path,
+) -> Result<PathBuf, Error> {
+    let entry_path = store.entry_path(store_key);
+    if entry_path.exists() {
+        return Ok(entry_path);
+    }
+
+    let store_dir = entry_path.parent().ok_or_else(|| Error::StoreCorruption {
+        message: format!("store entry '{}' has no parent", entry_path.display()),
+    })?;
+    let extracted = tempfile::tempdir_in(store_dir)
+        .map_err(Error::store("failed to create dmg store entry"))?;
+    let mount = DmgMount::attach(dmg_path)?;
+
+    for mount_point in &mount.mount_points {
+        for entry in
+            fs::read_dir(mount_point).map_err(Error::store("failed to read dmg mount point"))?
+        {
+            let entry = entry.map_err(Error::store("failed to read dmg entry"))?;
+            copy_path_recursive(&entry.path(), &extracted.path().join(entry.file_name()))?;
+        }
+    }
+
+    persist_temp_store_entry(extracted, &entry_path)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn ensure_dmg_store_entry(
+    _store: &Store,
+    _store_key: &str,
+    _dmg_path: &Path,
+) -> Result<PathBuf, Error> {
+    Err(Error::InvalidArgument {
+        message: "dmg casks are only supported on macOS".to_string(),
+    })
+}
+
+fn ensure_raw_cask_store_entry(
+    store: &Store,
+    store_key: &str,
+    blob_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<PathBuf, Error> {
+    let entry_path = store.entry_path(store_key);
+    if entry_path.exists() {
+        return Ok(entry_path);
+    }
+
+    let store_dir = entry_path.parent().ok_or_else(|| Error::StoreCorruption {
+        message: format!("store entry '{}' has no parent", entry_path.display()),
+    })?;
+    let staged = tempfile::tempdir_in(store_dir)
+        .map_err(Error::store("failed to create cask store entry"))?;
+    stage_raw_cask_binary(blob_path, staged.path(), cask)?;
+    persist_temp_store_entry(staged, &entry_path)
+}
+
+fn persist_temp_store_entry(
+    temp_dir: tempfile::TempDir,
+    entry_path: &Path,
+) -> Result<PathBuf, Error> {
+    let tmp_path = temp_dir.keep();
+    match fs::rename(&tmp_path, entry_path) {
+        Ok(()) => Ok(entry_path.to_path_buf()),
+        Err(_) if entry_path.exists() => {
+            let _ = fs::remove_dir_all(&tmp_path);
+            Ok(entry_path.to_path_buf())
+        }
+        Err(e) => {
+            let _ = fs::remove_dir_all(&tmp_path);
+            Err(Error::StoreCorruption {
+                message: format!("failed to rename store entry: {e}"),
+            })
+        }
+    }
+}
+
+fn run_builtin_post_install(
+    prefix: &Path,
+    install_name: &str,
+    keg_path: &Path,
+) -> Result<(), Error> {
+    match formula_token(install_name) {
+        "ca-certificates" => install_ca_certificates_bundle(prefix, keg_path),
+        _ => Ok(()),
+    }
+}
+
+fn install_ca_certificates_bundle(prefix: &Path, keg_path: &Path) -> Result<(), Error> {
+    let source = keg_path
+        .join("share")
+        .join("ca-certificates")
+        .join("cacert.pem");
+    if !source.exists() {
+        return Ok(());
+    }
+
+    let target_dir = prefix.join("etc").join("ca-certificates");
+    fs::create_dir_all(&target_dir)
+        .map_err(Error::store("failed to create ca-certificates dir"))?;
+    fs::copy(&source, target_dir.join("cert.pem"))
+        .map_err(Error::store("failed to install ca-certificates bundle"))?;
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+struct DmgMount {
+    mount_points: Vec<PathBuf>,
+    _mount_root: tempfile::TempDir,
+}
+
+#[cfg(target_os = "macos")]
+impl DmgMount {
+    fn attach(dmg_path: &Path) -> Result<Self, Error> {
+        let mount_root =
+            tempfile::tempdir().map_err(Error::store("failed to create dmg mount dir"))?;
+        let output = Command::new("hdiutil")
+            .args(["attach", "-plist", "-nobrowse", "-readonly", "-mountrandom"])
+            .arg(mount_root.path())
+            .arg(dmg_path)
+            .output()
+            .map_err(Error::exec("failed to run hdiutil attach"))?;
+
+        if !output.status.success() {
+            return Err(Error::ExecutionError {
+                message: format!(
+                    "hdiutil attach failed: {}",
+                    String::from_utf8_lossy(&output.stderr)
+                ),
+            });
+        }
+
+        let plist = String::from_utf8_lossy(&output.stdout);
+        let mount_points = parse_hdiutil_mount_points(&plist);
+        if mount_points.is_empty() {
+            return Err(Error::ExecutionError {
+                message: "hdiutil attach returned no mount points".to_string(),
+            });
+        }
+
+        Ok(Self {
+            mount_points,
+            _mount_root: mount_root,
+        })
+    }
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for DmgMount {
+    fn drop(&mut self) {
+        for mount_point in self.mount_points.iter().rev() {
+            let _ = Command::new("hdiutil")
+                .args(["detach", "-force"])
+                .arg(mount_point)
+                .status();
+        }
+    }
+}
+
+fn parse_hdiutil_mount_points(plist: &str) -> Vec<PathBuf> {
+    let mut mount_points = Vec::new();
+    let mut rest = plist;
+
+    while let Some(key_idx) = rest.find("<key>mount-point</key>") {
+        rest = &rest[key_idx + "<key>mount-point</key>".len()..];
+        let Some(start_idx) = rest.find("<string>") else {
+            break;
+        };
+        rest = &rest[start_idx + "<string>".len()..];
+        let Some(end_idx) = rest.find("</string>") else {
+            break;
+        };
+        mount_points.push(PathBuf::from(xml_unescape(&rest[..end_idx])));
+        rest = &rest[end_idx + "</string>".len()..];
+    }
+
+    mount_points
+}
+
+fn xml_unescape(input: &str) -> String {
+    input
+        .replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&apos;", "'")
 }
 
 fn stage_cask_apps(
@@ -485,6 +710,41 @@ fn stage_cask_apps(
     Ok(())
 }
 
+fn stage_cask_fonts(
+    extracted_root: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.fonts.is_empty() {
+        return Ok(());
+    }
+
+    let fonts_dir = keg_path.join(CASK_FONTS_DIR);
+    fs::create_dir_all(&fonts_dir).map_err(Error::store("failed to create cask font dir"))?;
+
+    for font in &cask.fonts {
+        let source = resolve_relative_cask_path(extracted_root, cask, &font.source, "font")?;
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' font source '{}' not found in archive",
+                    cask.token, font.source
+                ),
+            });
+        }
+
+        let target = fonts_dir.join(&font.target);
+        if target.symlink_metadata().is_ok() {
+            remove_path_any(&target)
+                .map_err(Error::store("failed to replace existing cask font"))?;
+        }
+
+        copy_path_recursive(&source, &target)?;
+    }
+
+    Ok(())
+}
+
 fn resolve_cask_binary_source_path(
     extracted_root: &Path,
     keg_path: &Path,
@@ -497,6 +757,21 @@ fn resolve_cask_binary_source_path(
             .or_else(|| source.strip_prefix("$APPDIR"))
             .unwrap_or(source);
         return resolve_relative_cask_path(&keg_path.join(CASK_APPS_DIR), cask, relative, "binary");
+    }
+
+    if Path::new(source).is_absolute() {
+        for app in &cask.apps {
+            let app_prefix = format!("/{}/", app.target);
+            if let Some(idx) = source.find(&app_prefix) {
+                let relative = &source[idx + 1..];
+                return resolve_relative_cask_path(
+                    &keg_path.join(CASK_APPS_DIR),
+                    cask,
+                    relative,
+                    "binary",
+                );
+            }
+        }
     }
 
     resolve_relative_cask_path(extracted_root, cask, source, "binary")
@@ -605,57 +880,137 @@ fn link_cask_apps(
     Ok(())
 }
 
+fn link_cask_fonts(
+    keg_path: &Path,
+    font_dir: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.fonts.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(font_dir).map_err(Error::store("failed to create font directory"))?;
+    let staged_fonts_dir = keg_path.join(CASK_FONTS_DIR);
+
+    for font in &cask.fonts {
+        let source = staged_fonts_dir.join(&font.target);
+        let target = font_dir.join(&font.target);
+
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' font '{}' was not staged correctly",
+                    cask.token, font.target
+                ),
+            });
+        }
+
+        if target.symlink_metadata().is_ok() {
+            return Err(Error::LinkConflict {
+                conflicts: vec![zb_core::ConflictedLink {
+                    path: target,
+                    owned_by: None,
+                }],
+            });
+        }
+
+        move_cask_artifact_to_target(&source, &target, "font")?;
+    }
+
+    Ok(())
+}
+
 fn move_cask_app_to_target(source: &Path, target: &Path) -> Result<(), Error> {
+    move_cask_artifact_to_target(source, target, "app")
+}
+
+fn move_cask_artifact_to_target(source: &Path, target: &Path, kind: &str) -> Result<(), Error> {
     if let Some(parent) = target.parent() {
-        fs::create_dir_all(parent)
-            .map_err(Error::store("failed to create app parent directory"))?;
+        fs::create_dir_all(parent).map_err(|e| Error::StoreCorruption {
+            message: format!("failed to create cask {kind} parent directory: {e}"),
+        })?;
     }
 
     match fs::rename(source, target) {
         Ok(()) => {}
         Err(_) => {
             copy_path_recursive(source, target)?;
-            remove_path_any(source)
-                .map_err(Error::store("failed to remove staged app after copy"))?;
+            remove_path_any(source).map_err(|e| Error::StoreCorruption {
+                message: format!("failed to remove staged cask {kind} after copy: {e}"),
+            })?;
         }
     }
 
     #[cfg(unix)]
-    std::os::unix::fs::symlink(target, source)
-        .map_err(Error::store("failed to create staged app symlink"))?;
+    std::os::unix::fs::symlink(target, source).map_err(|e| Error::StoreCorruption {
+        message: format!("failed to create staged cask {kind} symlink: {e}"),
+    })?;
 
     Ok(())
 }
 
 pub(super) fn uninstall_cask_apps(keg_path: &Path) -> Result<(), Error> {
-    let apps_dir = keg_path.join(CASK_APPS_DIR);
-    if !apps_dir.exists() {
+    uninstall_moved_cask_artifacts(&keg_path.join(CASK_APPS_DIR), "app")
+}
+
+pub(super) fn uninstall_cask_fonts(keg_path: &Path) -> Result<(), Error> {
+    uninstall_moved_cask_artifacts(&keg_path.join(CASK_FONTS_DIR), "font")
+}
+
+fn uninstall_moved_cask_artifacts(artifact_dir: &Path, kind: &str) -> Result<(), Error> {
+    if !artifact_dir.exists() {
         return Ok(());
     }
 
-    for entry in fs::read_dir(&apps_dir).map_err(Error::store("failed to read cask app dir"))? {
-        let entry = entry.map_err(Error::store("failed to read cask app entry"))?;
+    for entry in fs::read_dir(artifact_dir).map_err(|e| Error::StoreCorruption {
+        message: format!("failed to read cask {kind} dir: {e}"),
+    })? {
+        let entry = entry.map_err(|e| Error::StoreCorruption {
+            message: format!("failed to read cask {kind} entry: {e}"),
+        })?;
         let staged_path = entry.path();
         if !staged_path.is_symlink() {
             continue;
         }
 
-        let target = resolve_staged_cask_app_target(&staged_path)?;
+        let target = resolve_staged_cask_target(&staged_path)?;
         if target.exists() {
-            remove_path_any(&target).map_err(Error::store("failed to remove installed app"))?;
+            remove_path_any(&target).map_err(|e| Error::StoreCorruption {
+                message: format!("failed to remove installed cask {kind}: {e}"),
+            })?;
         }
     }
 
     Ok(())
 }
 
-pub(super) fn resolve_staged_cask_app_target(staged_path: &Path) -> Result<PathBuf, Error> {
+fn resolve_staged_cask_target(staged_path: &Path) -> Result<PathBuf, Error> {
     let target = fs::read_link(staged_path).map_err(Error::store("failed to read app symlink"))?;
     Ok(if target.is_relative() {
         staged_path.parent().unwrap_or(Path::new("")).join(target)
     } else {
         target
     })
+}
+
+fn default_font_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("ZEROBREW_FONTDIR") {
+        return PathBuf::from(path);
+    }
+
+    if cfg!(target_os = "macos")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join("Library/Fonts");
+    }
+
+    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
+        return PathBuf::from(xdg_data_home).join("fonts");
+    }
+
+    std::env::var("HOME")
+        .map(|home| PathBuf::from(home).join(".local/share/fonts"))
+        .unwrap_or_else(|_| PathBuf::from(".local/share/fonts"))
 }
 
 fn remove_path_any(path: &Path) -> std::io::Result<()> {
@@ -732,6 +1087,7 @@ mod tests {
                 target: "claude".to_string(),
             }],
             apps: vec![],
+            fonts: vec![],
         };
 
         stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap();
@@ -775,6 +1131,7 @@ mod tests {
                 },
             ],
             apps: vec![],
+            fonts: vec![],
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();
@@ -811,6 +1168,7 @@ mod tests {
                 source: "Visual Studio Code.app".to_string(),
                 target: "Visual Studio Code.app".to_string(),
             }],
+            fonts: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -823,6 +1181,86 @@ mod tests {
             keg_path
                 .join("Applications/Visual Studio Code.app/Contents/Info.plist")
                 .exists()
+        );
+    }
+
+    #[test]
+    fn stage_cask_artifacts_supports_resolved_appdir_binary_sources() {
+        let tmp = TempDir::new().unwrap();
+        let extracted_root = tmp.path().join("extract");
+        let app_binary_dir = extracted_root.join("OmniWM.app/Contents/MacOS");
+        fs::create_dir_all(&app_binary_dir).unwrap();
+        fs::write(app_binary_dir.join("omniwmctl"), b"#!/bin/sh\necho omni").unwrap();
+        fs::write(
+            extracted_root.join("OmniWM.app/Contents/Info.plist"),
+            b"plist",
+        )
+        .unwrap();
+
+        let keg_path = tmp.path().join("keg");
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:omniwm".to_string(),
+            token: "omniwm".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/omniwm.zip".to_string(),
+            sha256: "fff".to_string(),
+            binaries: vec![crate::installer::cask::CaskBinary {
+                source: "/Applications/OmniWM.app/Contents/MacOS/omniwmctl".to_string(),
+                target: "omniwmctl".to_string(),
+            }],
+            apps: vec![crate::installer::cask::CaskApp {
+                source: "OmniWM.app".to_string(),
+                target: "OmniWM.app".to_string(),
+            }],
+            fonts: vec![],
+        };
+
+        stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(keg_path.join("bin/omniwmctl")).unwrap(),
+            "#!/bin/sh\necho omni"
+        );
+    }
+
+    #[test]
+    fn parses_hdiutil_mount_points() {
+        let plist = r#"
+        <plist version="1.0">
+        <dict>
+          <key>system-entities</key>
+          <array>
+            <dict>
+              <key>mount-point</key>
+              <string>/private/tmp/homebrew-dmg/Test &amp; App</string>
+            </dict>
+          </array>
+        </dict>
+        </plist>
+        "#;
+
+        let mount_points = parse_hdiutil_mount_points(plist);
+        assert_eq!(mount_points.len(), 1);
+        assert_eq!(
+            mount_points[0],
+            PathBuf::from("/private/tmp/homebrew-dmg/Test & App")
+        );
+    }
+
+    #[test]
+    fn ca_certificates_post_install_writes_prefix_bundle() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("prefix");
+        let keg_path = tmp.path().join("Cellar/ca-certificates/2026-03-19");
+        let source = keg_path.join("share/ca-certificates/cacert.pem");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"certs").unwrap();
+
+        run_builtin_post_install(&prefix, "ca-certificates", &keg_path).unwrap();
+
+        assert_eq!(
+            fs::read(prefix.join("etc/ca-certificates/cert.pem")).unwrap(),
+            b"certs"
         );
     }
 
@@ -846,6 +1284,7 @@ mod tests {
                 source: "Test.app".to_string(),
                 target: "Test.app".to_string(),
             }],
+            fonts: vec![],
         };
 
         link_cask_apps(&keg_path, &app_dir, &cask).unwrap();
@@ -853,11 +1292,46 @@ mod tests {
         assert!(app_dir.join("Test.app/Contents/Info.plist").exists());
         assert!(staged_app.is_symlink());
         assert_eq!(
-            resolve_staged_cask_app_target(&staged_app).unwrap(),
+            resolve_staged_cask_target(&staged_app).unwrap(),
             app_dir.join("Test.app")
         );
 
         uninstall_cask_apps(&keg_path).unwrap();
         assert!(!app_dir.join("Test.app").exists());
+    }
+
+    #[test]
+    fn link_cask_fonts_moves_font_and_leaves_keg_symlink() {
+        let tmp = TempDir::new().unwrap();
+        let keg_path = tmp.path().join("keg");
+        let font_dir = tmp.path().join("Fonts");
+        let staged_font = keg_path.join("Fonts/Test-Regular.otf");
+        fs::create_dir_all(staged_font.parent().unwrap()).unwrap();
+        fs::write(&staged_font, b"font").unwrap();
+
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:font-test".to_string(),
+            token: "font-test".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/font.zip".to_string(),
+            sha256: "eee".to_string(),
+            binaries: vec![],
+            apps: vec![],
+            fonts: vec![crate::installer::cask::CaskFont {
+                source: "Test-Regular.otf".to_string(),
+                target: "Test-Regular.otf".to_string(),
+            }],
+        };
+
+        link_cask_fonts(&keg_path, &font_dir, &cask).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(font_dir.join("Test-Regular.otf")).unwrap(),
+            "font"
+        );
+        assert!(staged_font.is_symlink());
+
+        uninstall_cask_fonts(&keg_path).unwrap();
+        assert!(!font_dir.join("Test-Regular.otf").exists());
     }
 }

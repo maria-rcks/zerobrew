@@ -14,6 +14,12 @@ pub struct CaskApp {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskFont {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCask {
     pub install_name: String,
     pub token: String,
@@ -22,6 +28,7 @@ pub struct ResolvedCask {
     pub sha256: String,
     pub binaries: Vec<CaskBinary>,
     pub apps: Vec<CaskApp>,
+    pub fonts: Vec<CaskFont>,
 }
 
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
@@ -46,12 +53,13 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
 
     let binaries = parse_binary_artifacts(cask)?;
     let apps = parse_app_artifacts(cask)?;
-    if binaries.is_empty() && apps.is_empty() {
+    let fonts = parse_font_artifacts(cask)?;
+    if binaries.is_empty() && apps.is_empty() && fonts.is_empty() {
         let found = artifact_types(cask);
         return Err(Error::InvalidArgument {
             message: format!(
                 "cask '{token}' has no supported artifacts (found: {found}); \
-                 only casks with 'binary' and 'app' artifacts are currently supported"
+                 only casks with 'binary', 'app', and 'font' artifacts are currently supported"
             ),
         });
     }
@@ -64,6 +72,7 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         sha256,
         binaries,
         apps,
+        fonts,
     })
 }
 
@@ -144,11 +153,11 @@ fn parse_binary_artifacts(cask: &Value) -> Result<Vec<CaskBinary>, Error> {
         })?;
 
     for artifact in artifacts {
-        let Some(entries) = artifact.get("binary").and_then(Value::as_array) else {
+        let Some(value) = artifact.get("binary") else {
             continue;
         };
 
-        for entry in entries {
+        for entry in artifact_entries(value)? {
             let (source, target) = parse_binary_entry(entry)?;
             binaries.push(CaskBinary { source, target });
         }
@@ -167,17 +176,52 @@ fn parse_app_artifacts(cask: &Value) -> Result<Vec<CaskApp>, Error> {
         })?;
 
     for artifact in artifacts {
-        let Some(entries) = artifact.get("app").and_then(Value::as_array) else {
+        let Some(value) = artifact.get("app") else {
             continue;
         };
 
-        for entry in entries {
+        for entry in artifact_entries(value)? {
             let (source, target) = parse_app_entry(entry)?;
             apps.push(CaskApp { source, target });
         }
     }
 
     Ok(apps)
+}
+
+fn parse_font_artifacts(cask: &Value) -> Result<Vec<CaskFont>, Error> {
+    let mut fonts = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("font") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            let (source, target) = parse_font_entry(entry)?;
+            fonts.push(CaskFont { source, target });
+        }
+    }
+
+    Ok(fonts)
+}
+
+fn artifact_entries(value: &Value) -> Result<Vec<&Value>, Error> {
+    let Some(entries) = value.as_array() else {
+        return Ok(vec![value]);
+    };
+
+    if entries.first().is_some_and(Value::is_string) {
+        return Ok(vec![value]);
+    }
+
+    Ok(entries.iter().collect())
 }
 
 fn parse_binary_entry(entry: &Value) -> Result<(String, String), Error> {
@@ -232,6 +276,33 @@ fn parse_app_entry(entry: &Value) -> Result<(String, String), Error> {
         .unwrap_or_else(|| basename(source).unwrap_or_else(|_| source.to_string()));
 
     validate_relative_target(&target, "app")?;
+    Ok((source.to_string(), target))
+}
+
+fn parse_font_entry(entry: &Value) -> Result<(String, String), Error> {
+    if let Some(path) = entry.as_str() {
+        return Ok((path.to_string(), basename(path)?));
+    }
+
+    let array = entry.as_array().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask font artifact shape".to_string(),
+    })?;
+    let source = array
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "unsupported cask font source".to_string(),
+        })?;
+
+    let target = array
+        .get(1)
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("target"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .unwrap_or_else(|| basename(source).unwrap_or_else(|_| source.to_string()));
+
+    validate_relative_target(&target, "font")?;
     Ok((source.to_string(), target))
 }
 
@@ -308,6 +379,34 @@ mod tests {
     }
 
     #[test]
+    fn resolve_cask_parses_homebrew_arg_array_artifact() {
+        let cask = serde_json::json!({
+            "token": "omniwm",
+            "version": "1.0.0",
+            "url": "https://example.com/omniwm.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "app": ["OmniWM.app"] },
+                {
+                    "binary": [
+                        "/Applications/OmniWM.app/Contents/MacOS/omniwmctl",
+                        {"target": "omniwmctl"}
+                    ]
+                }
+            ]
+        });
+
+        let resolved = resolve_cask("omniwm", &cask).unwrap();
+        assert_eq!(resolved.apps.len(), 1);
+        assert_eq!(resolved.binaries.len(), 1);
+        assert_eq!(
+            resolved.binaries[0].source,
+            "/Applications/OmniWM.app/Contents/MacOS/omniwmctl"
+        );
+        assert_eq!(resolved.binaries[0].target, "omniwmctl");
+    }
+
+    #[test]
     fn resolve_cask_parses_app_targets() {
         let cask = serde_json::json!({
             "token": "test",
@@ -330,6 +429,32 @@ mod tests {
         assert_eq!(resolved.apps[0].target, "Test.app");
         assert_eq!(resolved.apps[1].source, "Subdir/Other.app");
         assert_eq!(resolved.apps[1].target, "Renamed.app");
+    }
+
+    #[test]
+    fn resolve_cask_parses_font_targets() {
+        let cask = serde_json::json!({
+            "token": "font-test",
+            "version": "1.0.0",
+            "url": "https://example.com/font.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                {
+                    "font": [
+                        ["Test-Regular.otf"],
+                        ["Subdir/Test-Bold.otf", {"target": "Renamed-Bold.otf"}]
+                    ]
+                }
+            ]
+        });
+
+        let resolved = resolve_cask("font-test", &cask).unwrap();
+        assert!(resolved.binaries.is_empty());
+        assert!(resolved.apps.is_empty());
+        assert_eq!(resolved.fonts.len(), 2);
+        assert_eq!(resolved.fonts[0].target, "Test-Regular.otf");
+        assert_eq!(resolved.fonts[1].source, "Subdir/Test-Bold.otf");
+        assert_eq!(resolved.fonts[1].target, "Renamed-Bold.otf");
     }
 
     #[test]
