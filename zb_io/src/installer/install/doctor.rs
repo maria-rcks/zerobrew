@@ -140,6 +140,7 @@ impl Installer {
                         report.broken_symlinks.push(file.link_path);
                     }
                 }
+                collect_broken_symlinks(&keg_path, &mut report.broken_symlinks)?;
             }
         }
 
@@ -215,6 +216,25 @@ impl Installer {
     }
 }
 
+fn collect_broken_symlinks(path: &std::path::Path, broken: &mut Vec<PathBuf>) -> Result<(), Error> {
+    for entry in std::fs::read_dir(path).map_err(Error::store("failed to read keg directory"))? {
+        let entry = entry.map_err(Error::store("failed to read keg directory entry"))?;
+        let path = entry.path();
+        let metadata =
+            std::fs::symlink_metadata(&path).map_err(Error::store("failed to inspect keg path"))?;
+
+        if metadata.file_type().is_symlink() {
+            if !path.exists() && !broken.contains(&path) {
+                broken.push(path);
+            }
+        } else if metadata.is_dir() {
+            collect_broken_symlinks(&path, broken)?;
+        }
+    }
+
+    Ok(())
+}
+
 #[derive(Debug, Default)]
 pub struct RepairSummary {
     pub removed_orphaned_kegs: usize,
@@ -233,5 +253,33 @@ impl RepairSummary {
             + self.removed_orphaned_store_entries
             + self.removed_broken_symlinks
             + self.pruned_keg_file_records
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn collect_broken_symlinks_detects_nested_cask_artifacts() {
+        let tmp = TempDir::new().unwrap();
+        let keg = tmp.path().join("Cellar/cask:test/1.0.0");
+        let artifacts = keg.join("Applications");
+        fs::create_dir_all(&artifacts).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            tmp.path().join("missing/Test.app"),
+            artifacts.join("Test.app"),
+        )
+        .unwrap();
+
+        let mut broken = Vec::new();
+        collect_broken_symlinks(&keg, &mut broken).unwrap();
+
+        assert_eq!(broken, vec![artifacts.join("Test.app")]);
     }
 }
