@@ -38,6 +38,7 @@ pub struct Installer {
     pub(crate) db: Database,
     prefix: PathBuf,
     app_dir: PathBuf,
+    font_dir: PathBuf,
     locks_dir: PathBuf,
 }
 
@@ -101,6 +102,25 @@ impl Installer {
         app_dir: PathBuf,
         locks_dir: PathBuf,
     ) -> Self {
+        let font_dir = default_font_dir();
+        Self::new_with_cask_dirs(
+            api_client, blob_cache, store, cellar, linker, db, prefix, app_dir, font_dir, locks_dir,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_cask_dirs(
+        api_client: ApiClient,
+        blob_cache: BlobCache,
+        store: Store,
+        cellar: Cellar,
+        linker: Linker,
+        db: Database,
+        prefix: PathBuf,
+        app_dir: PathBuf,
+        font_dir: PathBuf,
+        locks_dir: PathBuf,
+    ) -> Self {
         Self {
             api_client,
             downloader: ParallelDownloader::new(blob_cache),
@@ -110,12 +130,26 @@ impl Installer {
             db,
             prefix,
             app_dir,
+            font_dir,
             locks_dir,
         }
     }
 
-    pub(crate) fn app_dir(&self) -> &Path {
+    pub fn prefix(&self) -> &Path {
+        &self.prefix
+    }
+
+    pub fn app_dir(&self) -> &Path {
         &self.app_dir
+    }
+
+    pub fn font_dir(&self) -> &Path {
+        &self.font_dir
+    }
+
+    pub fn set_cask_artifact_dirs(&mut self, app_dir: PathBuf, font_dir: PathBuf) {
+        self.app_dir = app_dir;
+        self.font_dir = font_dir;
     }
 
     pub fn clear_api_cache(&self) -> Result<usize, Error> {
@@ -349,6 +383,31 @@ fn default_app_dir() -> PathBuf {
     PathBuf::from("/Applications")
 }
 
+fn default_font_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("ZEROBREW_FONTDIR") {
+        return PathBuf::from(path);
+    }
+
+    if cfg!(target_os = "macos")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        return PathBuf::from(home).join("Library").join("Fonts");
+    }
+
+    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
+        return PathBuf::from(xdg_data_home).join("fonts");
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home)
+            .join(".local")
+            .join("share")
+            .join("fonts");
+    }
+
+    PathBuf::from("fonts")
+}
+
 pub fn create_installer(
     root: &Path,
     prefix: &Path,
@@ -412,6 +471,7 @@ pub fn create_installer(
         db,
         prefix: prefix.to_path_buf(),
         app_dir: default_app_dir(),
+        font_dir: default_font_dir(),
         locks_dir,
     })
 }

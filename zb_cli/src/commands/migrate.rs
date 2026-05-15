@@ -1,5 +1,6 @@
 use crate::ui::{PromptDefault, StdUi};
 use console::style;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub async fn execute(
@@ -47,6 +48,15 @@ pub async fn execute(
         .iter()
         .map(|cask| format!("cask:{}", cask.name))
         .collect();
+    let cask_target_conflicts =
+        cask_artifact_conflicts(&cask_jsons, installer.app_dir(), installer.font_dir())?;
+    let cask_fallback_dirs = if cask_target_conflicts.is_empty() {
+        None
+    } else {
+        let app_dir = installer.prefix().join("Applications");
+        let font_dir = installer.prefix().join("Fonts");
+        Some((app_dir, font_dir))
+    };
 
     if formula_names.is_empty() && cask_install_names.is_empty() {
         ui.println("No supported Homebrew packages to migrate.")
@@ -62,6 +72,25 @@ pub async fn execute(
         .map_err(ui_error)?;
         for name in &formula_names {
             ui.bullet(name).map_err(ui_error)?;
+        }
+        ui.blank_line().map_err(ui_error)?;
+    }
+
+    if let Some((app_dir, font_dir)) = &cask_fallback_dirs {
+        ui.note(format!(
+            "Detected {} existing cask app/font target(s). Migrated cask artifacts will be linked under '{}' and '{}' to avoid overwriting existing Homebrew-managed files.",
+            cask_target_conflicts.len(),
+            app_dir.display(),
+            font_dir.display()
+        ))
+        .map_err(ui_error)?;
+        for conflict in cask_target_conflicts.iter().take(5) {
+            ui.bullet(conflict.display().to_string())
+                .map_err(ui_error)?;
+        }
+        if cask_target_conflicts.len() > 5 {
+            ui.bullet(format!("... and {} more", cask_target_conflicts.len() - 5))
+                .map_err(ui_error)?;
         }
         ui.blank_line().map_err(ui_error)?;
     }
@@ -115,6 +144,9 @@ pub async fn execute(
             cask_jsons.len()
         ))
         .map_err(ui_error)?;
+        if let Some((app_dir, font_dir)) = cask_fallback_dirs {
+            installer.set_cask_artifact_dirs(app_dir, font_dir);
+        }
         if let Err(e) = installer.install_casks_from_json(&cask_jsons, true).await {
             ui.error(format!("Cask migration hit an error: {e}"))
                 .map_err(ui_error)?;
@@ -203,6 +235,32 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+fn cask_artifact_conflicts(
+    casks: &[(String, serde_json::Value)],
+    app_dir: &Path,
+    font_dir: &Path,
+) -> Result<Vec<PathBuf>, zb_core::Error> {
+    let mut conflicts = Vec::new();
+
+    for (token, cask_json) in casks {
+        let cask = zb_io::resolve_cask(token, cask_json)?;
+        for app in &cask.apps {
+            let target = app_dir.join(&app.target);
+            if target.symlink_metadata().is_ok() {
+                conflicts.push(target);
+            }
+        }
+        for font in &cask.fonts {
+            let target = font_dir.join(&font.target);
+            if target.symlink_metadata().is_ok() {
+                conflicts.push(target);
+            }
+        }
+    }
+
+    Ok(conflicts)
 }
 
 fn uninstall_homebrew_packages(
@@ -315,5 +373,61 @@ fn check_install_status(
 fn ui_error(err: std::io::Error) -> zb_core::Error {
     zb_core::Error::StoreCorruption {
         message: format!("failed to write CLI output: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+    use tempfile::TempDir;
+
+    use super::cask_artifact_conflicts;
+
+    #[test]
+    fn cask_artifact_conflicts_detects_existing_apps_and_fonts() {
+        let tmp = TempDir::new().unwrap();
+        let app_dir = tmp.path().join("Applications");
+        let font_dir = tmp.path().join("Fonts");
+        std::fs::create_dir_all(app_dir.join("Demo.app")).unwrap();
+        std::fs::create_dir_all(&font_dir).unwrap();
+        std::fs::write(font_dir.join("Demo.otf"), b"font").unwrap();
+
+        let casks = vec![(
+            "demo".to_string(),
+            json!({
+                "version": "1.0.0",
+                "url": "https://example.com/demo.zip",
+                "sha256": "a".repeat(64),
+                "artifacts": [
+                    { "app": ["Demo.app"] },
+                    { "font": ["Demo.otf"] }
+                ]
+            }),
+        )];
+
+        let conflicts = cask_artifact_conflicts(&casks, &app_dir, &font_dir).unwrap();
+
+        assert_eq!(conflicts.len(), 2);
+        assert!(conflicts.contains(&app_dir.join("Demo.app")));
+        assert!(conflicts.contains(&font_dir.join("Demo.otf")));
+    }
+
+    #[test]
+    fn cask_artifact_conflicts_ignores_missing_targets() {
+        let tmp = TempDir::new().unwrap();
+        let casks = vec![(
+            "demo".to_string(),
+            json!({
+                "version": "1.0.0",
+                "url": "https://example.com/demo.zip",
+                "sha256": "a".repeat(64),
+                "artifacts": [{ "app": ["Demo.app"] }]
+            }),
+        )];
+
+        let conflicts =
+            cask_artifact_conflicts(&casks, &tmp.path().join("Applications"), tmp.path()).unwrap();
+
+        assert!(conflicts.is_empty());
     }
 }

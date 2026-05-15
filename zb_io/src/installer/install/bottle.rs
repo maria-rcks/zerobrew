@@ -293,7 +293,7 @@ impl Installer {
         let linked_files = if link {
             let linked_files = self.linker.link_keg(&keg_path)?;
             link_cask_apps(&keg_path, self.app_dir(), &cask)?;
-            link_cask_fonts(&keg_path, &default_font_dir(), &cask)?;
+            link_cask_fonts(&keg_path, self.font_dir(), &cask)?;
             linked_files
         } else {
             Vec::new()
@@ -996,26 +996,6 @@ fn resolve_staged_cask_target(staged_path: &Path) -> Result<PathBuf, Error> {
     } else {
         target
     })
-}
-
-fn default_font_dir() -> PathBuf {
-    if let Ok(path) = std::env::var("ZEROBREW_FONTDIR") {
-        return PathBuf::from(path);
-    }
-
-    if cfg!(target_os = "macos")
-        && let Ok(home) = std::env::var("HOME")
-    {
-        return PathBuf::from(home).join("Library/Fonts");
-    }
-
-    if let Ok(xdg_data_home) = std::env::var("XDG_DATA_HOME") {
-        return PathBuf::from(xdg_data_home).join("fonts");
-    }
-
-    std::env::var("HOME")
-        .map(|home| PathBuf::from(home).join(".local/share/fonts"))
-        .unwrap_or_else(|_| PathBuf::from(".local/share/fonts"))
 }
 
 fn remove_path_any(path: &Path) -> std::io::Result<()> {
