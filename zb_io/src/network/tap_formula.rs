@@ -369,6 +369,7 @@ pub fn parse_tap_formula_ruby(spec: &TapFormulaRef, source: &str) -> Result<Form
 
     Ok(Formula {
         name: spec.formula.clone(),
+        aliases: Vec::new(),
         versions: Versions { stable },
         dependencies,
         bottle: bottle.unwrap_or_else(empty_bottle),

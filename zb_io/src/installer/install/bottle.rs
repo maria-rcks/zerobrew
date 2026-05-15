@@ -66,6 +66,11 @@ impl Installer {
         if let Err(e) = self.linker.link_opt(&keg_path) {
             warn!(formula = %install_name, error = %e, "failed to create opt link");
         }
+        for alias in &item.formula.aliases {
+            if let Err(e) = self.linker.link_opt_alias(alias, &keg_path) {
+                warn!(formula = %install_name, alias = %alias, error = %e, "failed to create opt alias link");
+            }
+        }
 
         run_builtin_post_install(&self.prefix, install_name, &keg_path)?;
 

@@ -427,6 +427,27 @@ impl Linker {
         Ok(())
     }
 
+    pub fn link_opt_alias(&self, alias: &str, keg_path: &Path) -> Result<(), Error> {
+        let opt_link = self.opt_dir.join(alias);
+        if opt_link.symlink_metadata().is_ok() {
+            if let Ok(target) = fs::read_link(&opt_link) {
+                let resolved = if target.is_relative() {
+                    opt_link.parent().unwrap_or(Path::new("")).join(&target)
+                } else {
+                    target
+                };
+                if fs::canonicalize(&resolved).ok() == fs::canonicalize(keg_path).ok() {
+                    return Ok(());
+                }
+            }
+            let _ = fs::remove_file(&opt_link);
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(keg_path, &opt_link)
+            .map_err(Error::store("failed to create opt alias symlink"))?;
+        Ok(())
+    }
+
     pub fn is_linked(&self, keg_path: &Path) -> bool {
         let keg_bin = keg_path.join("bin");
         if !keg_bin.exists() {
@@ -636,6 +657,21 @@ mod tests {
         assert!(!prefix.join("bin/beta-only").exists());
         // The opt link should also not exist
         assert!(!prefix.join("opt/beta").exists());
+    }
+
+    #[test]
+    fn link_opt_alias_points_alias_at_keg() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path();
+        let linker = Linker::new(prefix).unwrap();
+        let keg = prefix.join("Cellar/ruby/4.0.4");
+        fs::create_dir_all(&keg).unwrap();
+
+        linker.link_opt(&keg).unwrap();
+        linker.link_opt_alias("ruby@4.0", &keg).unwrap();
+
+        assert_eq!(fs::read_link(prefix.join("opt/ruby")).unwrap(), keg);
+        assert_eq!(fs::read_link(prefix.join("opt/ruby@4.0")).unwrap(), keg);
     }
 
     #[test]

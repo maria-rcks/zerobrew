@@ -97,6 +97,8 @@ impl UsesFromMacos {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
 pub struct Formula {
     pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
     pub versions: Versions,
     pub dependencies: Vec<String>,
     pub bottle: Bottle,
