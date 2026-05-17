@@ -25,6 +25,22 @@ pub struct CaskPkg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskInstaller {
+    pub kind: CaskInstallerKind,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CaskInstallerKind {
+    Manual {
+        path: String,
+    },
+    Script {
+        executable: String,
+        args: Vec<String>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCask {
     pub install_name: String,
     pub token: String,
@@ -35,6 +51,8 @@ pub struct ResolvedCask {
     pub apps: Vec<CaskApp>,
     pub fonts: Vec<CaskFont>,
     pub pkgs: Vec<CaskPkg>,
+    pub installers: Vec<CaskInstaller>,
+    pub stage_only: bool,
 }
 
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
@@ -61,12 +79,20 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let apps = parse_app_artifacts(cask)?;
     let fonts = parse_font_artifacts(cask)?;
     let pkgs = parse_pkg_artifacts(cask)?;
-    if binaries.is_empty() && apps.is_empty() && fonts.is_empty() && pkgs.is_empty() {
+    let installers = parse_installer_artifacts(cask)?;
+    let stage_only = parse_stage_only_artifact(cask)?;
+    if binaries.is_empty()
+        && apps.is_empty()
+        && fonts.is_empty()
+        && pkgs.is_empty()
+        && installers.is_empty()
+        && !stage_only
+    {
         let found = artifact_types(cask);
         return Err(Error::InvalidArgument {
             message: format!(
                 "cask '{token}' has no supported artifacts (found: {found}); \
-                 only casks with 'binary', 'app', 'font', and 'pkg' artifacts are currently supported"
+                 only casks with 'binary', 'app', 'font', 'pkg', 'installer', and 'stage_only' artifacts are currently supported"
             ),
         });
     }
@@ -81,6 +107,8 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         apps,
         fonts,
         pkgs,
+        installers,
+        stage_only,
     })
 }
 
@@ -244,6 +272,46 @@ fn parse_pkg_artifacts(cask: &Value) -> Result<Vec<CaskPkg>, Error> {
     Ok(pkgs)
 }
 
+fn parse_installer_artifacts(cask: &Value) -> Result<Vec<CaskInstaller>, Error> {
+    let mut installers = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("installer") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            installers.push(parse_installer_entry(entry)?);
+        }
+    }
+
+    Ok(installers)
+}
+
+fn parse_stage_only_artifact(cask: &Value) -> Result<bool, Error> {
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    Ok(artifacts.iter().any(|artifact| {
+        artifact
+            .get("stage_only")
+            .and_then(Value::as_array)
+            .and_then(|values| values.first())
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    }))
+}
+
 fn artifact_entries(value: &Value) -> Result<Vec<&Value>, Error> {
     let Some(entries) = value.as_array() else {
         return Ok(vec![value]);
@@ -353,6 +421,50 @@ fn parse_pkg_entry(entry: &Value) -> Result<String, Error> {
         .ok_or_else(|| Error::InvalidArgument {
             message: "unsupported cask pkg source".to_string(),
         })
+}
+
+fn parse_installer_entry(entry: &Value) -> Result<CaskInstaller, Error> {
+    let object = entry.as_object().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask installer artifact shape".to_string(),
+    })?;
+
+    if let Some(manual) = object.get("manual").and_then(Value::as_str) {
+        return Ok(CaskInstaller {
+            kind: CaskInstallerKind::Manual {
+                path: manual.to_string(),
+            },
+        });
+    }
+
+    if let Some(script) = object.get("script").and_then(Value::as_object) {
+        let executable = script
+            .get("executable")
+            .and_then(Value::as_str)
+            .ok_or_else(|| Error::InvalidArgument {
+                message: "unsupported cask installer script without executable".to_string(),
+            })?;
+        let args = script
+            .get("args")
+            .and_then(Value::as_array)
+            .map(|values| {
+                values
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(ToString::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        return Ok(CaskInstaller {
+            kind: CaskInstallerKind::Script {
+                executable: executable.to_string(),
+                args,
+            },
+        });
+    }
+
+    Err(Error::InvalidArgument {
+        message: "unsupported cask installer artifact".to_string(),
+    })
 }
 
 fn validate_relative_target(target: &str, artifact_kind: &str) -> Result<(), Error> {
@@ -553,6 +665,56 @@ mod tests {
         assert_eq!(resolved.pkgs.len(), 2);
         assert_eq!(resolved.pkgs[0].source, "Install Test.pkg");
         assert_eq!(resolved.pkgs[1].source, "Nested/Other.pkg");
+    }
+
+    #[test]
+    fn resolve_cask_parses_installer_artifacts() {
+        let cask = serde_json::json!({
+            "token": "installer-test",
+            "version": "1.0.0",
+            "url": "https://example.com/installer.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "installer": [{ "manual": "Install.app" }] },
+                { "installer": [{ "script": { "executable": "install.sh", "args": ["--prefix", "$HOMEBREW_PREFIX"] } }] }
+            ]
+        });
+
+        let resolved = resolve_cask("installer-test", &cask).unwrap();
+        assert_eq!(resolved.installers.len(), 2);
+        assert_eq!(
+            resolved.installers[0].kind,
+            CaskInstallerKind::Manual {
+                path: "Install.app".to_string()
+            }
+        );
+        assert_eq!(
+            resolved.installers[1].kind,
+            CaskInstallerKind::Script {
+                executable: "install.sh".to_string(),
+                args: vec!["--prefix".to_string(), "$HOMEBREW_PREFIX".to_string()]
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_cask_accepts_stage_only_artifact() {
+        let cask = serde_json::json!({
+            "token": "stage-only",
+            "version": "1.0.0",
+            "url": "https://example.com/stage-only.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "stage_only": [true] }
+            ]
+        });
+
+        let resolved = resolve_cask("stage-only", &cask).unwrap();
+        assert!(resolved.stage_only);
+        assert!(resolved.binaries.is_empty());
+        assert!(resolved.apps.is_empty());
+        assert!(resolved.fonts.is_empty());
+        assert!(resolved.pkgs.is_empty());
     }
 
     #[test]

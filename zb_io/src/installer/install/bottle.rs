@@ -7,7 +7,7 @@ use zb_core::{Error, InstallMethod, formula_token};
 
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
-use crate::installer::cask::resolve_cask;
+use crate::installer::cask::{CaskInstallerKind, resolve_cask};
 use crate::network::download::{DownloadProgressCallback, DownloadRequest, DownloadResult};
 use crate::progress::InstallProgress;
 use crate::storage::store::Store;
@@ -318,9 +318,15 @@ impl Installer {
 
         if crate::extraction::is_archive(&blob_path)? {
             let extracted = self.store.ensure_entry(&cask.sha256, &blob_path)?;
+            if cask.stage_only {
+                copy_path_recursive(&extracted, &keg_path)?;
+            }
             stage_cask_artifacts(&extracted, &keg_path, &cask)?;
         } else if is_dmg_cask(&blob_path, &cask) {
             let extracted = ensure_dmg_store_entry(&self.store, &cask.sha256, &blob_path)?;
+            if cask.stage_only {
+                copy_path_recursive(&extracted, &keg_path)?;
+            }
             stage_cask_artifacts(&extracted, &keg_path, &cask)?;
         } else if is_raw_pkg_cask(&blob_path, &cask) {
             let stored = ensure_raw_cask_pkg_entry(&self.store, &cask.sha256, &blob_path, &cask)?;
@@ -335,6 +341,7 @@ impl Installer {
             link_cask_apps(&keg_path, self.app_dir(), &cask, options.force)?;
             link_cask_fonts(&keg_path, self.font_dir(), &cask, options.force)?;
             run_cask_pkgs(&keg_path, &cask)?;
+            run_cask_installers(&keg_path, self.prefix(), &cask)?;
             linked_files
         } else {
             Vec::new()
@@ -1173,6 +1180,70 @@ fn run_cask_pkgs(
     }
 }
 
+fn run_cask_installers(
+    keg_path: &Path,
+    prefix: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    for installer in &cask.installers {
+        match &installer.kind {
+            CaskInstallerKind::Manual { path } => {
+                warn!(
+                    cask = %cask.token,
+                    path = %keg_path.join(path).display(),
+                    "cask requires manual installer completion"
+                );
+            }
+            CaskInstallerKind::Script { executable, args } => {
+                let executable_path =
+                    resolve_relative_cask_path(keg_path, cask, executable, "installer")?;
+                if !executable_path.exists() {
+                    return Err(Error::InvalidArgument {
+                        message: format!(
+                            "cask '{}' installer executable '{}' not found",
+                            cask.token, executable
+                        ),
+                    });
+                }
+                let rendered_args: Vec<String> = args
+                    .iter()
+                    .map(|arg| render_cask_placeholder_arg(arg, prefix, keg_path, cask))
+                    .collect();
+                let status = Command::new(&executable_path)
+                    .args(&rendered_args)
+                    .current_dir(keg_path)
+                    .status()
+                    .map_err(Error::exec("failed to run cask installer script"))?;
+                if !status.success() {
+                    return Err(Error::ExecutionError {
+                        message: format!(
+                            "installer script failed for cask '{}': {}",
+                            cask.token,
+                            executable_path.display()
+                        ),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn render_cask_placeholder_arg(
+    arg: &str,
+    prefix: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> String {
+    arg.replace(
+        &format!("$HOMEBREW_PREFIX/Caskroom/{}/{}", cask.token, cask.version),
+        &keg_path.to_string_lossy(),
+    )
+    .replace("$HOMEBREW_PREFIX", &prefix.to_string_lossy())
+    .replace("$HOMEBREW_CELLAR", &prefix.join("Cellar").to_string_lossy())
+}
+
 pub(super) fn uninstall_cask_apps(keg_path: &Path) -> Result<(), Error> {
     uninstall_moved_cask_artifacts(&keg_path.join(CASK_APPS_DIR), "app")
 }
@@ -1293,6 +1364,8 @@ mod tests {
             apps: vec![],
             fonts: vec![],
             pkgs: vec![],
+            installers: vec![],
+            stage_only: false,
         };
 
         stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap();
@@ -1338,6 +1411,8 @@ mod tests {
             apps: vec![],
             fonts: vec![],
             pkgs: vec![],
+            installers: vec![],
+            stage_only: false,
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();
@@ -1364,6 +1439,8 @@ mod tests {
             pkgs: vec![crate::installer::cask::CaskPkg {
                 source: "Install Test.pkg".to_string(),
             }],
+            installers: vec![],
+            stage_only: false,
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1393,6 +1470,8 @@ mod tests {
             pkgs: vec![crate::installer::cask::CaskPkg {
                 source: "installer.pkg".to_string(),
             }],
+            installers: vec![],
+            stage_only: false,
         };
 
         stage_raw_cask_pkg(&blob_path, &keg_path, &cask).unwrap();
@@ -1400,6 +1479,67 @@ mod tests {
         assert_eq!(
             fs::read(keg_path.join("Pkgs/installer.pkg")).unwrap(),
             b"pkg"
+        );
+    }
+
+    #[test]
+    fn stage_only_cask_copies_extracted_tree() {
+        let tmp = TempDir::new().unwrap();
+        let extracted = tmp.path().join("extract");
+        fs::create_dir_all(extracted.join("sqlcl/bin")).unwrap();
+        fs::write(extracted.join("sqlcl/bin/sql"), b"sql").unwrap();
+        let keg_path = tmp.path().join("keg");
+
+        copy_path_recursive(&extracted, &keg_path).unwrap();
+
+        assert_eq!(fs::read(keg_path.join("sqlcl/bin/sql")).unwrap(), b"sql");
+    }
+
+    #[test]
+    fn run_cask_installers_executes_script_with_placeholders() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("prefix");
+        let keg_path = tmp.path().join("keg");
+        fs::create_dir_all(&keg_path).unwrap();
+        let script_path = keg_path.join("install.sh");
+        fs::write(
+            &script_path,
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > args.txt\n",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&script_path, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:installer-test".to_string(),
+            token: "installer-test".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/installer.zip".to_string(),
+            sha256: "installer".to_string(),
+            binaries: vec![],
+            apps: vec![],
+            fonts: vec![],
+            pkgs: vec![],
+            installers: vec![crate::installer::cask::CaskInstaller {
+                kind: crate::installer::cask::CaskInstallerKind::Script {
+                    executable: "install.sh".to_string(),
+                    args: vec![
+                        "$HOMEBREW_PREFIX".to_string(),
+                        "$HOMEBREW_PREFIX/Caskroom/installer-test/1.0.0".to_string(),
+                    ],
+                },
+            }],
+            stage_only: false,
+        };
+
+        run_cask_installers(&keg_path, &prefix, &cask).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(keg_path.join("args.txt")).unwrap(),
+            format!("{}\n{}\n", prefix.display(), keg_path.display())
         );
     }
 
@@ -1435,6 +1575,8 @@ mod tests {
             }],
             fonts: vec![],
             pkgs: vec![],
+            installers: vec![],
+            stage_only: false,
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1480,6 +1622,8 @@ mod tests {
             }],
             fonts: vec![],
             pkgs: vec![],
+            installers: vec![],
+            stage_only: false,
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1594,6 +1738,8 @@ mod tests {
             }],
             fonts: vec![],
             pkgs: vec![],
+            installers: vec![],
+            stage_only: false,
         };
 
         link_cask_apps(&keg_path, &app_dir, &cask, false).unwrap();
@@ -1631,6 +1777,8 @@ mod tests {
                 target: "Test-Regular.otf".to_string(),
             }],
             pkgs: vec![],
+            installers: vec![],
+            stage_only: false,
         };
 
         link_cask_fonts(&keg_path, &font_dir, &cask, false).unwrap();
