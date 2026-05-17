@@ -362,10 +362,17 @@ fn still_installed_formulas(targets: &[String]) -> Vec<String> {
         && output.status.success()
     {
         let stdout = String::from_utf8_lossy(&output.stdout);
-        let still_installed: std::collections::HashSet<&str> = stdout.lines().collect();
+        let still_installed = installed_formula_tokens(&stdout);
         actually_failed.retain(|target| still_installed.contains(target.as_str()));
     }
     actually_failed
+}
+
+fn installed_formula_tokens(output: &str) -> std::collections::HashSet<&str> {
+    output
+        .lines()
+        .map(|line| line.rsplit('/').next().unwrap_or(line))
+        .collect()
 }
 
 fn still_installed_casks(targets: &[String]) -> Vec<String> {
@@ -410,7 +417,7 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{cask_artifact_conflicts, supported_cask_jsons};
+    use super::{cask_artifact_conflicts, installed_formula_tokens, supported_cask_jsons};
 
     #[test]
     fn cask_artifact_conflicts_detects_existing_apps_and_fonts() {
@@ -511,5 +518,14 @@ mod tests {
         assert_eq!(supported.len(), 1);
         assert_eq!(supported[0].0, "demo");
         assert_eq!(unsupported, vec!["pkg-only"]);
+    }
+
+    #[test]
+    fn installed_formula_tokens_normalizes_tap_prefixed_names() {
+        let installed = installed_formula_tokens("bash\nuser/tap/cppzmq\n");
+
+        assert!(installed.contains("bash"));
+        assert!(installed.contains("cppzmq"));
+        assert!(!installed.contains("user/tap/cppzmq"));
     }
 }
