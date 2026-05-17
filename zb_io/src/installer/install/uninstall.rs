@@ -1,7 +1,10 @@
 use zb_core::{Error, formula_token};
 
 use super::Installer;
-use super::bottle::{uninstall_cask_apps, uninstall_cask_fonts};
+use super::bottle::{
+    uninstall_cask_app_images, uninstall_cask_apps, uninstall_cask_fonts,
+    uninstall_cask_generic_artifacts,
+};
 
 impl Installer {
     pub fn uninstall(&mut self, name: &str) -> Result<(), Error> {
@@ -14,6 +17,8 @@ impl Installer {
         self.linker.unlink_keg(&keg_path)?;
         uninstall_cask_apps(&keg_path)?;
         uninstall_cask_fonts(&keg_path)?;
+        uninstall_cask_generic_artifacts(&keg_path)?;
+        uninstall_cask_app_images(&keg_path, self.appimage_dir())?;
 
         {
             let tx = self.db.transaction()?;

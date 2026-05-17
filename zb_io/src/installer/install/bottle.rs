@@ -17,6 +17,8 @@ use super::{CaskInstallOptions, Installer, MAX_CORRUPTION_RETRIES, PlannedInstal
 const CASK_APPS_DIR: &str = "Applications";
 const CASK_FONTS_DIR: &str = "Fonts";
 const CASK_PKGS_DIR: &str = "Pkgs";
+const CASK_GENERIC_ARTIFACTS_DIR: &str = "Artifacts";
+const CASK_APP_IMAGES_DIR: &str = "AppImages";
 
 impl Installer {
     pub(super) async fn process_bottle_item(
@@ -331,6 +333,10 @@ impl Installer {
         } else if is_raw_pkg_cask(&blob_path, &cask) {
             let stored = ensure_raw_cask_pkg_entry(&self.store, &cask.sha256, &blob_path, &cask)?;
             copy_path_recursive(&stored, &keg_path)?;
+        } else if is_raw_appimage_cask(&blob_path, &cask) {
+            let stored =
+                ensure_raw_cask_appimage_entry(&self.store, &cask.sha256, &blob_path, &cask)?;
+            copy_path_recursive(&stored, &keg_path)?;
         } else {
             let stored = ensure_raw_cask_store_entry(&self.store, &cask.sha256, &blob_path, &cask)?;
             copy_path_recursive(&stored, &keg_path)?;
@@ -340,6 +346,8 @@ impl Installer {
             let linked_files = self.linker.link_keg(&keg_path)?;
             link_cask_apps(&keg_path, self.app_dir(), &cask, options.force)?;
             link_cask_fonts(&keg_path, self.font_dir(), &cask, options.force)?;
+            link_cask_generic_artifacts(&keg_path, self.prefix(), &cask, options.force)?;
+            link_cask_app_images(&keg_path, self.appimage_dir(), &cask, options.force)?;
             run_cask_pkgs(&keg_path, &cask)?;
             run_cask_installers(&keg_path, self.prefix(), &cask)?;
             linked_files
@@ -484,11 +492,14 @@ fn stage_raw_cask_binary(
     if !cask.apps.is_empty()
         || !cask.fonts.is_empty()
         || !cask.pkgs.is_empty()
+        || !cask.suites.is_empty()
+        || !cask.generic_artifacts.is_empty()
+        || !cask.app_images.is_empty()
         || cask.binaries.len() != 1
     {
         return Err(Error::InvalidArgument {
             message: format!(
-                "cask '{}' has unsupported raw download layout; expected exactly 1 binary artifact and no app/font artifacts",
+                "cask '{}' has unsupported raw download layout; expected exactly 1 binary artifact and no app/font/pkg/suite/artifact/appimage artifacts",
                 cask.token
             ),
         });
@@ -525,11 +536,14 @@ fn stage_raw_cask_pkg(
     if !cask.apps.is_empty()
         || !cask.fonts.is_empty()
         || !cask.binaries.is_empty()
+        || !cask.suites.is_empty()
+        || !cask.generic_artifacts.is_empty()
+        || !cask.app_images.is_empty()
         || cask.pkgs.len() != 1
     {
         return Err(Error::InvalidArgument {
             message: format!(
-                "cask '{}' has unsupported raw download layout; expected exactly 1 pkg artifact and no app/font/binary artifacts",
+                "cask '{}' has unsupported raw download layout; expected exactly 1 pkg artifact and no app/font/binary/suite/artifact/appimage artifacts",
                 cask.token
             ),
         });
@@ -548,6 +562,37 @@ fn stage_raw_cask_pkg(
     Ok(())
 }
 
+fn stage_raw_cask_appimage(
+    blob_path: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if !cask.apps.is_empty()
+        || !cask.fonts.is_empty()
+        || !cask.binaries.is_empty()
+        || !cask.pkgs.is_empty()
+        || !cask.suites.is_empty()
+        || !cask.generic_artifacts.is_empty()
+        || cask.app_images.len() != 1
+    {
+        return Err(Error::InvalidArgument {
+            message: format!(
+                "cask '{}' has unsupported raw download layout; expected exactly 1 appimage artifact and no app/font/binary/pkg/suite/artifact artifacts",
+                cask.token
+            ),
+        });
+    }
+
+    let app_image = &cask.app_images[0];
+    let app_images_dir = keg_path.join(CASK_APP_IMAGES_DIR);
+    fs::create_dir_all(&app_images_dir)
+        .map_err(Error::store("failed to create cask appimage dir"))?;
+    let target = app_images_dir.join(&app_image.target);
+    fs::copy(blob_path, &target).map_err(Error::store("failed to stage raw cask appimage"))?;
+    make_executable(&target)?;
+    Ok(())
+}
+
 fn stage_cask_artifacts(
     extracted_root: &Path,
     keg_path: &Path,
@@ -556,6 +601,9 @@ fn stage_cask_artifacts(
     stage_cask_apps(extracted_root, keg_path, cask)?;
     stage_cask_fonts(extracted_root, keg_path, cask)?;
     stage_cask_pkgs(extracted_root, keg_path, cask)?;
+    stage_cask_suites(extracted_root, keg_path, cask)?;
+    stage_cask_generic_artifacts(extracted_root, keg_path, cask)?;
+    stage_cask_app_images(extracted_root, keg_path, cask)?;
     stage_cask_binaries(extracted_root, keg_path, cask)?;
     Ok(())
 }
@@ -583,6 +631,19 @@ fn is_raw_pkg_cask(blob_path: &Path, cask: &crate::installer::cask::ResolvedCask
                 .split(['?', '#'])
                 .next()
                 .is_some_and(|url_path| url_path.to_ascii_lowercase().ends_with(".pkg")))
+}
+
+fn is_raw_appimage_cask(blob_path: &Path, cask: &crate::installer::cask::ResolvedCask) -> bool {
+    cask.app_images.len() == 1
+        && (blob_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("appimage"))
+            || cask
+                .url
+                .split(['?', '#'])
+                .next()
+                .is_some_and(|url_path| url_path.to_ascii_lowercase().ends_with(".appimage")))
 }
 
 #[cfg(target_os = "macos")]
@@ -663,6 +724,26 @@ fn ensure_raw_cask_pkg_entry(
     let staged = tempfile::tempdir_in(store_dir)
         .map_err(Error::store("failed to create cask pkg store entry"))?;
     stage_raw_cask_pkg(blob_path, staged.path(), cask)?;
+    persist_temp_store_entry(staged, &entry_path)
+}
+
+fn ensure_raw_cask_appimage_entry(
+    store: &Store,
+    store_key: &str,
+    blob_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<PathBuf, Error> {
+    let entry_path = store.entry_path(store_key);
+    if entry_path.exists() {
+        return Ok(entry_path);
+    }
+
+    let store_dir = entry_path.parent().ok_or_else(|| Error::StoreCorruption {
+        message: format!("store entry '{}' has no parent", entry_path.display()),
+    })?;
+    let staged = tempfile::tempdir_in(store_dir)
+        .map_err(Error::store("failed to create cask appimage store entry"))?;
+    stage_raw_cask_appimage(blob_path, staged.path(), cask)?;
     persist_temp_store_entry(staged, &entry_path)
 }
 
@@ -909,6 +990,117 @@ fn stage_cask_pkgs(
     Ok(())
 }
 
+fn stage_cask_suites(
+    extracted_root: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.suites.is_empty() {
+        return Ok(());
+    }
+
+    let apps_dir = keg_path.join(CASK_APPS_DIR);
+    fs::create_dir_all(&apps_dir).map_err(Error::store("failed to create cask suite dir"))?;
+
+    for suite in &cask.suites {
+        let source = resolve_relative_cask_path(extracted_root, cask, &suite.source, "suite")?;
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' suite source '{}' not found in archive",
+                    cask.token, suite.source
+                ),
+            });
+        }
+
+        let target = apps_dir.join(&suite.target);
+        if target.symlink_metadata().is_ok() {
+            remove_path_any(&target)
+                .map_err(Error::store("failed to replace existing cask suite"))?;
+        }
+
+        copy_path_recursive(&source, &target)?;
+    }
+
+    Ok(())
+}
+
+fn stage_cask_generic_artifacts(
+    extracted_root: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.generic_artifacts.is_empty() {
+        return Ok(());
+    }
+
+    let artifacts_dir = keg_path.join(CASK_GENERIC_ARTIFACTS_DIR);
+    fs::create_dir_all(&artifacts_dir)
+        .map_err(Error::store("failed to create cask generic artifact dir"))?;
+
+    for artifact in &cask.generic_artifacts {
+        let source =
+            resolve_relative_cask_path(extracted_root, cask, &artifact.source, "artifact")?;
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' artifact source '{}' not found in archive",
+                    cask.token, artifact.source
+                ),
+            });
+        }
+
+        let target = artifacts_dir.join(safe_staged_artifact_name(&artifact.target)?);
+        if target.symlink_metadata().is_ok() {
+            remove_path_any(&target).map_err(Error::store(
+                "failed to replace existing cask generic artifact",
+            ))?;
+        }
+
+        copy_path_recursive(&source, &target)?;
+    }
+
+    Ok(())
+}
+
+fn stage_cask_app_images(
+    extracted_root: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.app_images.is_empty() {
+        return Ok(());
+    }
+
+    let app_images_dir = keg_path.join(CASK_APP_IMAGES_DIR);
+    fs::create_dir_all(&app_images_dir)
+        .map_err(Error::store("failed to create cask appimage dir"))?;
+
+    for app_image in &cask.app_images {
+        let source =
+            resolve_relative_cask_path(extracted_root, cask, &app_image.source, "appimage")?;
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' appimage source '{}' not found in archive",
+                    cask.token, app_image.source
+                ),
+            });
+        }
+
+        let target = app_images_dir.join(&app_image.target);
+        if target.symlink_metadata().is_ok() {
+            remove_path_any(&target)
+                .map_err(Error::store("failed to replace existing cask appimage"))?;
+        }
+
+        copy_path_recursive(&source, &target)?;
+        make_executable(&target)?;
+    }
+
+    Ok(())
+}
+
 fn resolve_cask_binary_source_path(
     extracted_root: &Path,
     keg_path: &Path,
@@ -1024,22 +1216,31 @@ fn link_cask_apps(
     cask: &crate::installer::cask::ResolvedCask,
     force: bool,
 ) -> Result<(), Error> {
-    if cask.apps.is_empty() {
+    if cask.apps.is_empty() && cask.suites.is_empty() {
         return Ok(());
     }
 
     fs::create_dir_all(app_dir).map_err(Error::store("failed to create app directory"))?;
     let staged_apps_dir = keg_path.join(CASK_APPS_DIR);
 
-    for app in &cask.apps {
-        let source = staged_apps_dir.join(&app.target);
-        let target = app_dir.join(&app.target);
+    for (target_name, kind) in cask
+        .apps
+        .iter()
+        .map(|app| (app.target.as_str(), "app"))
+        .chain(
+            cask.suites
+                .iter()
+                .map(|suite| (suite.target.as_str(), "suite")),
+        )
+    {
+        let source = staged_apps_dir.join(target_name);
+        let target = app_dir.join(target_name);
 
         if !source.exists() {
             return Err(Error::InvalidArgument {
                 message: format!(
-                    "cask '{}' app '{}' was not staged correctly",
-                    cask.token, app.target
+                    "cask '{}' {kind} '{}' was not staged correctly",
+                    cask.token, target_name
                 ),
             });
         }
@@ -1110,6 +1311,105 @@ fn link_cask_fonts(
     Ok(())
 }
 
+fn link_cask_generic_artifacts(
+    keg_path: &Path,
+    prefix: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+    force: bool,
+) -> Result<(), Error> {
+    if cask.generic_artifacts.is_empty() {
+        return Ok(());
+    }
+
+    let staged_artifacts_dir = keg_path.join(CASK_GENERIC_ARTIFACTS_DIR);
+    for artifact in &cask.generic_artifacts {
+        let source = staged_artifacts_dir.join(safe_staged_artifact_name(&artifact.target)?);
+        let target = resolve_generic_artifact_target(prefix, &artifact.target)?;
+
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' artifact '{}' was not staged correctly",
+                    cask.token, artifact.target
+                ),
+            });
+        }
+
+        if target.symlink_metadata().is_ok() {
+            if force {
+                remove_path_any(&target)
+                    .map_err(Error::store("failed to replace existing cask artifact"))?;
+            } else {
+                return Err(Error::LinkConflict {
+                    conflicts: vec![zb_core::ConflictedLink {
+                        path: target,
+                        owned_by: None,
+                    }],
+                });
+            }
+        }
+
+        move_cask_artifact_to_target(&source, &target, "artifact")?;
+    }
+
+    Ok(())
+}
+
+fn link_cask_app_images(
+    keg_path: &Path,
+    appimage_dir: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+    force: bool,
+) -> Result<(), Error> {
+    if cask.app_images.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(appimage_dir)
+        .map_err(Error::store("failed to create appimage directory"))?;
+    let staged_app_images_dir = keg_path.join(CASK_APP_IMAGES_DIR);
+
+    for app_image in &cask.app_images {
+        let source = staged_app_images_dir.join(&app_image.target);
+        let target = appimage_dir.join(&app_image.target);
+
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' appimage '{}' was not staged correctly",
+                    cask.token, app_image.target
+                ),
+            });
+        }
+
+        if target.symlink_metadata().is_ok() {
+            if force {
+                remove_path_any(&target)
+                    .map_err(Error::store("failed to replace existing cask appimage"))?;
+            } else {
+                return Err(Error::LinkConflict {
+                    conflicts: vec![zb_core::ConflictedLink {
+                        path: target,
+                        owned_by: None,
+                    }],
+                });
+            }
+        }
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&source, &target).map_err(|e| Error::StoreCorruption {
+            message: format!("failed to link cask appimage '{}': {e}", app_image.target),
+        })?;
+        #[cfg(not(unix))]
+        fs::copy(&source, &target).map_err(|e| Error::StoreCorruption {
+            message: format!("failed to copy cask appimage '{}': {e}", app_image.target),
+        })?;
+        make_executable(&source)?;
+    }
+
+    Ok(())
+}
+
 fn move_cask_app_to_target(source: &Path, target: &Path) -> Result<(), Error> {
     move_cask_artifact_to_target(source, target, "app")
 }
@@ -1135,6 +1435,65 @@ fn move_cask_artifact_to_target(source: &Path, target: &Path, kind: &str) -> Res
     std::os::unix::fs::symlink(target, source).map_err(|e| Error::StoreCorruption {
         message: format!("failed to create staged cask {kind} symlink: {e}"),
     })?;
+
+    Ok(())
+}
+
+fn resolve_generic_artifact_target(prefix: &Path, target: &str) -> Result<PathBuf, Error> {
+    if let Some(relative) = target.strip_prefix("$HOMEBREW_PREFIX/") {
+        return Ok(prefix.join(relative));
+    }
+
+    if target == "$HOMEBREW_PREFIX" {
+        return Ok(prefix.to_path_buf());
+    }
+
+    let target_path = Path::new(target);
+    if target_path.is_absolute() {
+        return Err(Error::InvalidArgument {
+            message: format!(
+                "generic cask artifact target '{target}' is outside the zerobrew prefix"
+            ),
+        });
+    }
+
+    for component in target_path.components() {
+        if matches!(component, std::path::Component::ParentDir) {
+            return Err(Error::InvalidArgument {
+                message: format!("generic cask artifact target '{target}' cannot contain '..'"),
+            });
+        }
+    }
+
+    Ok(prefix.join(target_path))
+}
+
+fn safe_staged_artifact_name(target: &str) -> Result<String, Error> {
+    let normalized = target
+        .trim_start_matches("$HOMEBREW_PREFIX/")
+        .trim_start_matches('/');
+    if normalized.is_empty() || normalized.contains("..") {
+        return Err(Error::InvalidArgument {
+            message: format!("invalid cask artifact target '{target}'"),
+        });
+    }
+
+    Ok(normalized.replace('/', "__"))
+}
+
+fn make_executable(path: &Path) -> Result<(), Error> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(path)
+            .map_err(Error::store("failed to read cask executable metadata"))?
+            .permissions();
+        if perms.mode() & 0o111 == 0 {
+            perms.set_mode(0o755);
+            fs::set_permissions(path, perms)
+                .map_err(Error::store("failed to make cask artifact executable"))?;
+        }
+    }
 
     Ok(())
 }
@@ -1252,6 +1611,35 @@ pub(super) fn uninstall_cask_fonts(keg_path: &Path) -> Result<(), Error> {
     uninstall_moved_cask_artifacts(&keg_path.join(CASK_FONTS_DIR), "font")
 }
 
+pub(super) fn uninstall_cask_generic_artifacts(keg_path: &Path) -> Result<(), Error> {
+    uninstall_moved_cask_artifacts(&keg_path.join(CASK_GENERIC_ARTIFACTS_DIR), "artifact")
+}
+
+pub(super) fn uninstall_cask_app_images(keg_path: &Path, appimage_dir: &Path) -> Result<(), Error> {
+    let staged_app_images_dir = keg_path.join(CASK_APP_IMAGES_DIR);
+    if !staged_app_images_dir.exists() || !appimage_dir.exists() {
+        return Ok(());
+    }
+
+    for entry in fs::read_dir(appimage_dir).map_err(Error::store("failed to read appimage dir"))? {
+        let entry = entry.map_err(Error::store("failed to read appimage dir entry"))?;
+        let path = entry.path();
+        let Ok(target) = fs::read_link(&path) else {
+            continue;
+        };
+        let resolved = if target.is_relative() {
+            path.parent().unwrap_or(Path::new("")).join(target)
+        } else {
+            target
+        };
+        if resolved.starts_with(&staged_app_images_dir) {
+            fs::remove_file(&path).map_err(Error::store("failed to remove appimage symlink"))?;
+        }
+    }
+
+    Ok(())
+}
+
 fn uninstall_moved_cask_artifacts(artifact_dir: &Path, kind: &str) -> Result<(), Error> {
     if !artifact_dir.exists() {
         return Ok(());
@@ -1364,6 +1752,12 @@ mod tests {
             apps: vec![],
             fonts: vec![],
             pkgs: vec![],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };
@@ -1411,6 +1805,12 @@ mod tests {
             apps: vec![],
             fonts: vec![],
             pkgs: vec![],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };
@@ -1439,6 +1839,12 @@ mod tests {
             pkgs: vec![crate::installer::cask::CaskPkg {
                 source: "Install Test.pkg".to_string(),
             }],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };
@@ -1470,6 +1876,12 @@ mod tests {
             pkgs: vec![crate::installer::cask::CaskPkg {
                 source: "installer.pkg".to_string(),
             }],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };
@@ -1480,6 +1892,117 @@ mod tests {
             fs::read(keg_path.join("Pkgs/installer.pkg")).unwrap(),
             b"pkg"
         );
+    }
+
+    #[test]
+    fn stage_cask_artifacts_copies_suite_generic_and_appimage() {
+        let tmp = TempDir::new().unwrap();
+        let extracted_root = tmp.path().join("extract");
+        fs::create_dir_all(extracted_root.join("Suite")).unwrap();
+        fs::write(extracted_root.join("Suite/tool"), b"suite").unwrap();
+        fs::create_dir_all(extracted_root.join("config")).unwrap();
+        fs::write(extracted_root.join("config/example.conf"), b"config").unwrap();
+        fs::write(extracted_root.join("Demo.AppImage"), b"appimage").unwrap();
+
+        let keg_path = tmp.path().join("keg");
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:mixed-artifacts".to_string(),
+            token: "mixed-artifacts".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/mixed.zip".to_string(),
+            sha256: "mixed".to_string(),
+            binaries: vec![],
+            apps: vec![],
+            fonts: vec![],
+            pkgs: vec![],
+            suites: vec![crate::installer::cask::CaskSuite {
+                source: "Suite".to_string(),
+                target: "Suite".to_string(),
+            }],
+            generic_artifacts: vec![crate::installer::cask::CaskGenericArtifact {
+                source: "config/example.conf".to_string(),
+                target: "etc/example.conf".to_string(),
+            }],
+            app_images: vec![crate::installer::cask::CaskAppImage {
+                source: "Demo.AppImage".to_string(),
+                target: "Demo.AppImage".to_string(),
+            }],
+            installers: vec![],
+            stage_only: false,
+        };
+
+        stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
+
+        assert_eq!(
+            fs::read(keg_path.join("Applications/Suite/tool")).unwrap(),
+            b"suite"
+        );
+        assert_eq!(
+            fs::read(keg_path.join("Artifacts/etc__example.conf")).unwrap(),
+            b"config"
+        );
+        assert_eq!(
+            fs::read(keg_path.join("AppImages/Demo.AppImage")).unwrap(),
+            b"appimage"
+        );
+    }
+
+    #[test]
+    fn link_cask_artifacts_links_suite_generic_and_appimage() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("prefix");
+        let app_dir = tmp.path().join("Applications");
+        let appimage_dir = tmp.path().join("AppImages");
+        let keg_path = tmp.path().join("keg");
+        fs::create_dir_all(keg_path.join("Applications/Suite")).unwrap();
+        fs::write(keg_path.join("Applications/Suite/tool"), b"suite").unwrap();
+        fs::create_dir_all(keg_path.join("Artifacts")).unwrap();
+        fs::write(keg_path.join("Artifacts/etc__example.conf"), b"config").unwrap();
+        fs::create_dir_all(keg_path.join("AppImages")).unwrap();
+        fs::write(keg_path.join("AppImages/Demo.AppImage"), b"appimage").unwrap();
+
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:mixed-artifacts".to_string(),
+            token: "mixed-artifacts".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/mixed.zip".to_string(),
+            sha256: "mixed".to_string(),
+            binaries: vec![],
+            apps: vec![],
+            fonts: vec![],
+            pkgs: vec![],
+            suites: vec![crate::installer::cask::CaskSuite {
+                source: "Suite".to_string(),
+                target: "Suite".to_string(),
+            }],
+            generic_artifacts: vec![crate::installer::cask::CaskGenericArtifact {
+                source: "config/example.conf".to_string(),
+                target: "etc/example.conf".to_string(),
+            }],
+            app_images: vec![crate::installer::cask::CaskAppImage {
+                source: "Demo.AppImage".to_string(),
+                target: "Demo.AppImage".to_string(),
+            }],
+            installers: vec![],
+            stage_only: false,
+        };
+
+        link_cask_apps(&keg_path, &app_dir, &cask, false).unwrap();
+        link_cask_generic_artifacts(&keg_path, &prefix, &cask, false).unwrap();
+        link_cask_app_images(&keg_path, &appimage_dir, &cask, false).unwrap();
+
+        assert_eq!(fs::read(app_dir.join("Suite/tool")).unwrap(), b"suite");
+        assert_eq!(
+            fs::read(prefix.join("etc/example.conf")).unwrap(),
+            b"config"
+        );
+        assert!(appimage_dir.join("Demo.AppImage").exists());
+        uninstall_cask_apps(&keg_path).unwrap();
+        uninstall_cask_generic_artifacts(&keg_path).unwrap();
+        uninstall_cask_app_images(&keg_path, &appimage_dir).unwrap();
+        assert!(!app_dir.join("Suite").exists());
+        assert!(!prefix.join("etc/example.conf").exists());
+        assert!(!appimage_dir.join("Demo.AppImage").exists());
     }
 
     #[test]
@@ -1523,6 +2046,12 @@ mod tests {
             apps: vec![],
             fonts: vec![],
             pkgs: vec![],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![crate::installer::cask::CaskInstaller {
                 kind: crate::installer::cask::CaskInstallerKind::Script {
                     executable: "install.sh".to_string(),
@@ -1575,6 +2104,12 @@ mod tests {
             }],
             fonts: vec![],
             pkgs: vec![],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };
@@ -1622,6 +2157,12 @@ mod tests {
             }],
             fonts: vec![],
             pkgs: vec![],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };
@@ -1738,6 +2279,12 @@ mod tests {
             }],
             fonts: vec![],
             pkgs: vec![],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };
@@ -1777,6 +2324,12 @@ mod tests {
                 target: "Test-Regular.otf".to_string(),
             }],
             pkgs: vec![],
+            suites: vec![],
+
+            generic_artifacts: vec![],
+
+            app_images: vec![],
+
             installers: vec![],
             stage_only: false,
         };

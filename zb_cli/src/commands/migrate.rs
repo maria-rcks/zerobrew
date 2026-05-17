@@ -143,6 +143,7 @@ pub async fn execute(
                 formula: false,
                 appdir: None,
                 fontdir: None,
+                appimagedir: None,
                 no_binaries: false,
                 force: false,
             },

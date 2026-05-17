@@ -25,6 +25,24 @@ pub struct CaskPkg {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskSuite {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskGenericArtifact {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskAppImage {
+    pub source: String,
+    pub target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CaskInstaller {
     pub kind: CaskInstallerKind,
 }
@@ -51,6 +69,9 @@ pub struct ResolvedCask {
     pub apps: Vec<CaskApp>,
     pub fonts: Vec<CaskFont>,
     pub pkgs: Vec<CaskPkg>,
+    pub suites: Vec<CaskSuite>,
+    pub generic_artifacts: Vec<CaskGenericArtifact>,
+    pub app_images: Vec<CaskAppImage>,
     pub installers: Vec<CaskInstaller>,
     pub stage_only: bool,
 }
@@ -79,12 +100,18 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let apps = parse_app_artifacts(cask)?;
     let fonts = parse_font_artifacts(cask)?;
     let pkgs = parse_pkg_artifacts(cask)?;
+    let suites = parse_suite_artifacts(cask)?;
+    let generic_artifacts = parse_generic_artifacts(cask)?;
+    let app_images = parse_appimage_artifacts(cask)?;
     let installers = parse_installer_artifacts(cask)?;
     let stage_only = parse_stage_only_artifact(cask)?;
     if binaries.is_empty()
         && apps.is_empty()
         && fonts.is_empty()
         && pkgs.is_empty()
+        && suites.is_empty()
+        && generic_artifacts.is_empty()
+        && app_images.is_empty()
         && installers.is_empty()
         && !stage_only
     {
@@ -92,7 +119,7 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         return Err(Error::InvalidArgument {
             message: format!(
                 "cask '{token}' has no supported artifacts (found: {found}); \
-                 only casks with 'binary', 'app', 'font', 'pkg', 'installer', and 'stage_only' artifacts are currently supported"
+                 only casks with 'binary', 'app', 'font', 'pkg', 'suite', 'artifact', 'appimage', 'installer', and 'stage_only' artifacts are currently supported"
             ),
         });
     }
@@ -107,6 +134,9 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         apps,
         fonts,
         pkgs,
+        suites,
+        generic_artifacts,
+        app_images,
         installers,
         stage_only,
     })
@@ -272,6 +302,75 @@ fn parse_pkg_artifacts(cask: &Value) -> Result<Vec<CaskPkg>, Error> {
     Ok(pkgs)
 }
 
+fn parse_suite_artifacts(cask: &Value) -> Result<Vec<CaskSuite>, Error> {
+    let mut suites = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("suite") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            let (source, target) = parse_moved_entry(entry, "suite", true)?;
+            suites.push(CaskSuite { source, target });
+        }
+    }
+
+    Ok(suites)
+}
+
+fn parse_generic_artifacts(cask: &Value) -> Result<Vec<CaskGenericArtifact>, Error> {
+    let mut generic_artifacts = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("artifact") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            let (source, target) = parse_moved_entry(entry, "artifact", false)?;
+            generic_artifacts.push(CaskGenericArtifact { source, target });
+        }
+    }
+
+    Ok(generic_artifacts)
+}
+
+fn parse_appimage_artifacts(cask: &Value) -> Result<Vec<CaskAppImage>, Error> {
+    let mut app_images = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("appimage") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            let (source, target) = parse_moved_entry(entry, "appimage", true)?;
+            app_images.push(CaskAppImage { source, target });
+        }
+    }
+
+    Ok(app_images)
+}
+
 fn parse_installer_artifacts(cask: &Value) -> Result<Vec<CaskInstaller>, Error> {
     let mut installers = Vec::new();
     let artifacts = cask
@@ -421,6 +520,49 @@ fn parse_pkg_entry(entry: &Value) -> Result<String, Error> {
         .ok_or_else(|| Error::InvalidArgument {
             message: "unsupported cask pkg source".to_string(),
         })
+}
+
+fn parse_moved_entry(
+    entry: &Value,
+    artifact_kind: &str,
+    default_target: bool,
+) -> Result<(String, String), Error> {
+    if let Some(path) = entry.as_str() {
+        if default_target {
+            return Ok((path.to_string(), basename(path)?));
+        }
+
+        return Err(Error::InvalidArgument {
+            message: format!("cask {artifact_kind} artifact requires a target"),
+        });
+    }
+
+    let array = entry.as_array().ok_or_else(|| Error::InvalidArgument {
+        message: format!("unsupported cask {artifact_kind} artifact shape"),
+    })?;
+    let source = array
+        .first()
+        .and_then(Value::as_str)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: format!("unsupported cask {artifact_kind} source"),
+        })?;
+
+    let target = array
+        .get(1)
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("target"))
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| default_target.then(|| basename(source).unwrap_or_else(|_| source.to_string())))
+        .ok_or_else(|| Error::InvalidArgument {
+            message: format!("cask {artifact_kind} artifact requires a target"),
+        })?;
+
+    if artifact_kind != "artifact" {
+        validate_relative_target(&target, artifact_kind)?;
+    }
+
+    Ok((source.to_string(), target))
 }
 
 fn parse_installer_entry(entry: &Value) -> Result<CaskInstaller, Error> {
@@ -665,6 +807,62 @@ mod tests {
         assert_eq!(resolved.pkgs.len(), 2);
         assert_eq!(resolved.pkgs[0].source, "Install Test.pkg");
         assert_eq!(resolved.pkgs[1].source, "Nested/Other.pkg");
+    }
+
+    #[test]
+    fn resolve_cask_parses_suite_artifacts() {
+        let cask = serde_json::json!({
+            "token": "suite-test",
+            "version": "1.0.0",
+            "url": "https://example.com/suite.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "suite": ["Office"] },
+                { "suite": [["Tools", {"target": "Dev Tools"}]] }
+            ]
+        });
+
+        let resolved = resolve_cask("suite-test", &cask).unwrap();
+        assert_eq!(resolved.suites.len(), 2);
+        assert_eq!(resolved.suites[0].target, "Office");
+        assert_eq!(resolved.suites[1].source, "Tools");
+        assert_eq!(resolved.suites[1].target, "Dev Tools");
+    }
+
+    #[test]
+    fn resolve_cask_parses_generic_artifact_targets() {
+        let cask = serde_json::json!({
+            "token": "artifact-test",
+            "version": "1.0.0",
+            "url": "https://example.com/artifact.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "artifact": [["config/example.conf", {"target": "etc/example.conf"}]] }
+            ]
+        });
+
+        let resolved = resolve_cask("artifact-test", &cask).unwrap();
+        assert_eq!(resolved.generic_artifacts.len(), 1);
+        assert_eq!(resolved.generic_artifacts[0].source, "config/example.conf");
+        assert_eq!(resolved.generic_artifacts[0].target, "etc/example.conf");
+    }
+
+    #[test]
+    fn resolve_cask_parses_appimage_artifacts() {
+        let cask = serde_json::json!({
+            "token": "appimage-test",
+            "version": "1.0.0",
+            "url": "https://example.com/appimage.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "appimage": [["Demo.AppImage", {"target": "Demo"}]] }
+            ]
+        });
+
+        let resolved = resolve_cask("appimage-test", &cask).unwrap();
+        assert_eq!(resolved.app_images.len(), 1);
+        assert_eq!(resolved.app_images[0].source, "Demo.AppImage");
+        assert_eq!(resolved.app_images[0].target, "Demo");
     }
 
     #[test]

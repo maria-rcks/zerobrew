@@ -111,6 +111,8 @@ pub enum Commands {
         #[arg(long)]
         fontdir: Option<PathBuf>,
         #[arg(long)]
+        appimagedir: Option<PathBuf>,
+        #[arg(long)]
         no_binaries: bool,
         #[arg(long)]
         force: bool,

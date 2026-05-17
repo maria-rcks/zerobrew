@@ -39,6 +39,7 @@ pub struct Installer {
     prefix: PathBuf,
     app_dir: PathBuf,
     font_dir: PathBuf,
+    appimage_dir: PathBuf,
     locks_dir: PathBuf,
 }
 
@@ -65,6 +66,7 @@ pub struct CaskInstallOptions {
     pub force: bool,
     pub app_dir: Option<PathBuf>,
     pub font_dir: Option<PathBuf>,
+    pub appimage_dir: Option<PathBuf>,
 }
 
 impl CaskInstallOptions {
@@ -75,6 +77,7 @@ impl CaskInstallOptions {
             force: false,
             app_dir: None,
             font_dir: None,
+            appimage_dir: None,
         }
     }
 }
@@ -142,6 +145,7 @@ impl Installer {
         font_dir: PathBuf,
         locks_dir: PathBuf,
     ) -> Self {
+        let appimage_dir = default_appimage_dir();
         Self {
             api_client,
             downloader: ParallelDownloader::new(blob_cache),
@@ -152,6 +156,7 @@ impl Installer {
             prefix,
             app_dir,
             font_dir,
+            appimage_dir,
             locks_dir,
         }
     }
@@ -166,6 +171,10 @@ impl Installer {
 
     pub fn font_dir(&self) -> &Path {
         &self.font_dir
+    }
+
+    pub fn appimage_dir(&self) -> &Path {
+        &self.appimage_dir
     }
 
     pub fn set_cask_artifact_dirs(&mut self, app_dir: PathBuf, font_dir: PathBuf) {
@@ -327,11 +336,15 @@ impl Installer {
         let mut installed = 0usize;
         let original_app_dir = self.app_dir.clone();
         let original_font_dir = self.font_dir.clone();
+        let original_appimage_dir = self.appimage_dir.clone();
         if let Some(app_dir) = &options.app_dir {
             self.app_dir = app_dir.clone();
         }
         if let Some(font_dir) = &options.font_dir {
             self.font_dir = font_dir.clone();
+        }
+        if let Some(appimage_dir) = &options.appimage_dir {
+            self.appimage_dir = appimage_dir.clone();
         }
 
         let result = async {
@@ -351,6 +364,7 @@ impl Installer {
 
         self.app_dir = original_app_dir;
         self.font_dir = original_font_dir;
+        self.appimage_dir = original_appimage_dir;
         result
     }
 
@@ -454,6 +468,18 @@ fn default_font_dir() -> PathBuf {
     PathBuf::from("fonts")
 }
 
+fn default_appimage_dir() -> PathBuf {
+    if let Ok(path) = std::env::var("ZEROBREW_APPIMAGEDIR") {
+        return PathBuf::from(path);
+    }
+
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join("Applications");
+    }
+
+    PathBuf::from("Applications")
+}
+
 pub fn create_installer(
     root: &Path,
     prefix: &Path,
@@ -518,6 +544,7 @@ pub fn create_installer(
         prefix: prefix.to_path_buf(),
         app_dir: default_app_dir(),
         font_dir: default_font_dir(),
+        appimage_dir: default_appimage_dir(),
         locks_dir,
     })
 }

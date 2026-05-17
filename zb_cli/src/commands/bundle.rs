@@ -49,6 +49,7 @@ async fn install_from_file(
                 formula: false,
                 appdir: None,
                 fontdir: None,
+                appimagedir: None,
                 no_binaries: false,
                 force: false,
             },

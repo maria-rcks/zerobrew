@@ -61,6 +61,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formula,
             appdir,
             fontdir,
+            appimagedir,
             no_binaries,
             force,
         } => {
@@ -74,6 +75,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     formula,
                     appdir,
                     fontdir,
+                    appimagedir,
                     no_binaries,
                     force,
                 },

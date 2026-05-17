@@ -19,6 +19,7 @@ pub struct InstallRequest {
     pub formula: bool,
     pub appdir: Option<PathBuf>,
     pub fontdir: Option<PathBuf>,
+    pub appimagedir: Option<PathBuf>,
     pub no_binaries: bool,
     pub force: bool,
 }
@@ -260,6 +261,7 @@ pub async fn execute(
         options.force = request.force;
         options.app_dir = request.appdir;
         options.font_dir = request.fontdir;
+        options.appimage_dir = request.appimagedir;
         let result = installer
             .install_casks_with_options(&cask_names, options)
             .await?;
