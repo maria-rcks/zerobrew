@@ -16,6 +16,7 @@ use super::{CaskInstallOptions, Installer, MAX_CORRUPTION_RETRIES, PlannedInstal
 
 const CASK_APPS_DIR: &str = "Applications";
 const CASK_FONTS_DIR: &str = "Fonts";
+const CASK_PKGS_DIR: &str = "Pkgs";
 
 impl Installer {
     pub(super) async fn process_bottle_item(
@@ -321,6 +322,9 @@ impl Installer {
         } else if is_dmg_cask(&blob_path, &cask) {
             let extracted = ensure_dmg_store_entry(&self.store, &cask.sha256, &blob_path)?;
             stage_cask_artifacts(&extracted, &keg_path, &cask)?;
+        } else if is_raw_pkg_cask(&blob_path, &cask) {
+            let stored = ensure_raw_cask_pkg_entry(&self.store, &cask.sha256, &blob_path, &cask)?;
+            copy_path_recursive(&stored, &keg_path)?;
         } else {
             let stored = ensure_raw_cask_store_entry(&self.store, &cask.sha256, &blob_path, &cask)?;
             copy_path_recursive(&stored, &keg_path)?;
@@ -330,6 +334,7 @@ impl Installer {
             let linked_files = self.linker.link_keg(&keg_path)?;
             link_cask_apps(&keg_path, self.app_dir(), &cask, options.force)?;
             link_cask_fonts(&keg_path, self.font_dir(), &cask, options.force)?;
+            run_cask_pkgs(&keg_path, &cask)?;
             linked_files
         } else {
             Vec::new()
@@ -469,7 +474,11 @@ fn stage_raw_cask_binary(
     keg_path: &Path,
     cask: &crate::installer::cask::ResolvedCask,
 ) -> Result<(), Error> {
-    if !cask.apps.is_empty() || !cask.fonts.is_empty() || cask.binaries.len() != 1 {
+    if !cask.apps.is_empty()
+        || !cask.fonts.is_empty()
+        || !cask.pkgs.is_empty()
+        || cask.binaries.len() != 1
+    {
         return Err(Error::InvalidArgument {
             message: format!(
                 "cask '{}' has unsupported raw download layout; expected exactly 1 binary artifact and no app/font artifacts",
@@ -501,6 +510,37 @@ fn stage_raw_cask_binary(
     Ok(())
 }
 
+fn stage_raw_cask_pkg(
+    blob_path: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if !cask.apps.is_empty()
+        || !cask.fonts.is_empty()
+        || !cask.binaries.is_empty()
+        || cask.pkgs.len() != 1
+    {
+        return Err(Error::InvalidArgument {
+            message: format!(
+                "cask '{}' has unsupported raw download layout; expected exactly 1 pkg artifact and no app/font/binary artifacts",
+                cask.token
+            ),
+        });
+    }
+
+    let pkg = &cask.pkgs[0];
+    let pkg_dir = keg_path.join(CASK_PKGS_DIR);
+    fs::create_dir_all(&pkg_dir).map_err(Error::store("failed to create cask pkg dir"))?;
+    let target = pkg_dir.join(
+        Path::new(&pkg.source)
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("installer.pkg"),
+    );
+    fs::copy(blob_path, &target).map_err(Error::store("failed to stage raw cask pkg"))?;
+    Ok(())
+}
+
 fn stage_cask_artifacts(
     extracted_root: &Path,
     keg_path: &Path,
@@ -508,6 +548,7 @@ fn stage_cask_artifacts(
 ) -> Result<(), Error> {
     stage_cask_apps(extracted_root, keg_path, cask)?;
     stage_cask_fonts(extracted_root, keg_path, cask)?;
+    stage_cask_pkgs(extracted_root, keg_path, cask)?;
     stage_cask_binaries(extracted_root, keg_path, cask)?;
     Ok(())
 }
@@ -522,6 +563,19 @@ fn is_dmg_cask(blob_path: &Path, cask: &crate::installer::cask::ResolvedCask) ->
             .split(['?', '#'])
             .next()
             .is_some_and(|url_path| url_path.to_ascii_lowercase().ends_with(".dmg"))
+}
+
+fn is_raw_pkg_cask(blob_path: &Path, cask: &crate::installer::cask::ResolvedCask) -> bool {
+    cask.pkgs.len() == 1
+        && (blob_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("pkg"))
+            || cask
+                .url
+                .split(['?', '#'])
+                .next()
+                .is_some_and(|url_path| url_path.to_ascii_lowercase().ends_with(".pkg")))
 }
 
 #[cfg(target_os = "macos")]
@@ -582,6 +636,26 @@ fn ensure_raw_cask_store_entry(
     let staged = tempfile::tempdir_in(store_dir)
         .map_err(Error::store("failed to create cask store entry"))?;
     stage_raw_cask_binary(blob_path, staged.path(), cask)?;
+    persist_temp_store_entry(staged, &entry_path)
+}
+
+fn ensure_raw_cask_pkg_entry(
+    store: &Store,
+    store_key: &str,
+    blob_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<PathBuf, Error> {
+    let entry_path = store.entry_path(store_key);
+    if entry_path.exists() {
+        return Ok(entry_path);
+    }
+
+    let store_dir = entry_path.parent().ok_or_else(|| Error::StoreCorruption {
+        message: format!("store entry '{}' has no parent", entry_path.display()),
+    })?;
+    let staged = tempfile::tempdir_in(store_dir)
+        .map_err(Error::store("failed to create cask pkg store entry"))?;
+    stage_raw_cask_pkg(blob_path, staged.path(), cask)?;
     persist_temp_store_entry(staged, &entry_path)
 }
 
@@ -778,6 +852,48 @@ fn stage_cask_fonts(
         if target.symlink_metadata().is_ok() {
             remove_path_any(&target)
                 .map_err(Error::store("failed to replace existing cask font"))?;
+        }
+
+        copy_path_recursive(&source, &target)?;
+    }
+
+    Ok(())
+}
+
+fn stage_cask_pkgs(
+    extracted_root: &Path,
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.pkgs.is_empty() {
+        return Ok(());
+    }
+
+    let pkgs_dir = keg_path.join(CASK_PKGS_DIR);
+    fs::create_dir_all(&pkgs_dir).map_err(Error::store("failed to create cask pkg dir"))?;
+
+    for pkg in &cask.pkgs {
+        let source = resolve_relative_cask_path(extracted_root, cask, &pkg.source, "pkg")?;
+        if !source.exists() {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask '{}' pkg source '{}' not found in archive",
+                    cask.token, pkg.source
+                ),
+            });
+        }
+
+        let target = pkgs_dir.join(
+            Path::new(&pkg.source)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .ok_or_else(|| Error::InvalidArgument {
+                    message: format!("invalid cask pkg path '{}'", pkg.source),
+                })?,
+        );
+        if target.symlink_metadata().is_ok() {
+            remove_path_any(&target)
+                .map_err(Error::store("failed to replace existing cask pkg"))?;
         }
 
         copy_path_recursive(&source, &target)?;
@@ -1016,6 +1132,47 @@ fn move_cask_artifact_to_target(source: &Path, target: &Path, kind: &str) -> Res
     Ok(())
 }
 
+fn run_cask_pkgs(
+    keg_path: &Path,
+    cask: &crate::installer::cask::ResolvedCask,
+) -> Result<(), Error> {
+    if cask.pkgs.is_empty() {
+        return Ok(());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        return Err(Error::InvalidArgument {
+            message: format!("pkg cask '{}' can only be installed on macOS", cask.token),
+        });
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        for pkg in &cask.pkgs {
+            let pkg_path = keg_path.join(CASK_PKGS_DIR).join(
+                Path::new(&pkg.source)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .ok_or_else(|| Error::InvalidArgument {
+                        message: format!("invalid cask pkg path '{}'", pkg.source),
+                    })?,
+            );
+            let status = Command::new("/usr/bin/sudo")
+                .arg("/usr/sbin/installer")
+                .args(["-pkg", &pkg_path.to_string_lossy(), "-target", "/"])
+                .status()
+                .map_err(Error::exec("failed to run cask pkg installer"))?;
+            if !status.success() {
+                return Err(Error::ExecutionError {
+                    message: format!("pkg installer failed for '{}'", pkg_path.display()),
+                });
+            }
+        }
+        Ok(())
+    }
+}
+
 pub(super) fn uninstall_cask_apps(keg_path: &Path) -> Result<(), Error> {
     uninstall_moved_cask_artifacts(&keg_path.join(CASK_APPS_DIR), "app")
 }
@@ -1135,6 +1292,7 @@ mod tests {
             }],
             apps: vec![],
             fonts: vec![],
+            pkgs: vec![],
         };
 
         stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap();
@@ -1179,10 +1337,70 @@ mod tests {
             ],
             apps: vec![],
             fonts: vec![],
+            pkgs: vec![],
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();
         assert!(err.to_string().contains("unsupported raw download layout"));
+    }
+
+    #[test]
+    fn stage_cask_artifacts_copies_pkg_artifacts() {
+        let tmp = TempDir::new().unwrap();
+        let extracted_root = tmp.path().join("extract");
+        fs::create_dir_all(&extracted_root).unwrap();
+        fs::write(extracted_root.join("Install Test.pkg"), b"pkg").unwrap();
+
+        let keg_path = tmp.path().join("keg");
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:pkg-test".to_string(),
+            token: "pkg-test".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/pkg.zip".to_string(),
+            sha256: "pkg".to_string(),
+            binaries: vec![],
+            apps: vec![],
+            fonts: vec![],
+            pkgs: vec![crate::installer::cask::CaskPkg {
+                source: "Install Test.pkg".to_string(),
+            }],
+        };
+
+        stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
+
+        assert_eq!(
+            fs::read(keg_path.join("Pkgs/Install Test.pkg")).unwrap(),
+            b"pkg"
+        );
+    }
+
+    #[test]
+    fn stage_raw_cask_pkg_copies_pkg_artifact() {
+        let tmp = TempDir::new().unwrap();
+        let blob_path = tmp.path().join("installer.pkg");
+        fs::write(&blob_path, b"pkg").unwrap();
+
+        let keg_path = tmp.path().join("keg");
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:pkg-test".to_string(),
+            token: "pkg-test".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/installer.pkg".to_string(),
+            sha256: "pkg".to_string(),
+            binaries: vec![],
+            apps: vec![],
+            fonts: vec![],
+            pkgs: vec![crate::installer::cask::CaskPkg {
+                source: "installer.pkg".to_string(),
+            }],
+        };
+
+        stage_raw_cask_pkg(&blob_path, &keg_path, &cask).unwrap();
+
+        assert_eq!(
+            fs::read(keg_path.join("Pkgs/installer.pkg")).unwrap(),
+            b"pkg"
+        );
     }
 
     #[test]
@@ -1216,6 +1434,7 @@ mod tests {
                 target: "Visual Studio Code.app".to_string(),
             }],
             fonts: vec![],
+            pkgs: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1260,6 +1479,7 @@ mod tests {
                 target: "OmniWM.app".to_string(),
             }],
             fonts: vec![],
+            pkgs: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1295,6 +1515,7 @@ mod tests {
                 target: "Bar.app".to_string(),
             }],
             fonts: vec![],
+            pkgs: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1372,6 +1593,7 @@ mod tests {
                 target: "Test.app".to_string(),
             }],
             fonts: vec![],
+            pkgs: vec![],
         };
 
         link_cask_apps(&keg_path, &app_dir, &cask, false).unwrap();
@@ -1408,6 +1630,7 @@ mod tests {
                 source: "Test-Regular.otf".to_string(),
                 target: "Test-Regular.otf".to_string(),
             }],
+            pkgs: vec![],
         };
 
         link_cask_fonts(&keg_path, &font_dir, &cask, false).unwrap();

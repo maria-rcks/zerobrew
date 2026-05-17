@@ -20,6 +20,11 @@ pub struct CaskFont {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CaskPkg {
+    pub source: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResolvedCask {
     pub install_name: String,
     pub token: String,
@@ -29,6 +34,7 @@ pub struct ResolvedCask {
     pub binaries: Vec<CaskBinary>,
     pub apps: Vec<CaskApp>,
     pub fonts: Vec<CaskFont>,
+    pub pkgs: Vec<CaskPkg>,
 }
 
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
@@ -54,12 +60,13 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let binaries = parse_binary_artifacts(cask)?;
     let apps = parse_app_artifacts(cask)?;
     let fonts = parse_font_artifacts(cask)?;
-    if binaries.is_empty() && apps.is_empty() && fonts.is_empty() {
+    let pkgs = parse_pkg_artifacts(cask)?;
+    if binaries.is_empty() && apps.is_empty() && fonts.is_empty() && pkgs.is_empty() {
         let found = artifact_types(cask);
         return Err(Error::InvalidArgument {
             message: format!(
                 "cask '{token}' has no supported artifacts (found: {found}); \
-                 only casks with 'binary', 'app', and 'font' artifacts are currently supported"
+                 only casks with 'binary', 'app', 'font', and 'pkg' artifacts are currently supported"
             ),
         });
     }
@@ -73,6 +80,7 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         binaries,
         apps,
         fonts,
+        pkgs,
     })
 }
 
@@ -212,6 +220,30 @@ fn parse_font_artifacts(cask: &Value) -> Result<Vec<CaskFont>, Error> {
     Ok(fonts)
 }
 
+fn parse_pkg_artifacts(cask: &Value) -> Result<Vec<CaskPkg>, Error> {
+    let mut pkgs = Vec::new();
+    let artifacts = cask
+        .get("artifacts")
+        .and_then(Value::as_array)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "failed to parse cask JSON: missing artifacts array".to_string(),
+        })?;
+
+    for artifact in artifacts {
+        let Some(value) = artifact.get("pkg") else {
+            continue;
+        };
+
+        for entry in artifact_entries(value)? {
+            pkgs.push(CaskPkg {
+                source: parse_pkg_entry(entry)?,
+            });
+        }
+    }
+
+    Ok(pkgs)
+}
+
 fn artifact_entries(value: &Value) -> Result<Vec<&Value>, Error> {
     let Some(entries) = value.as_array() else {
         return Ok(vec![value]);
@@ -304,6 +336,23 @@ fn parse_font_entry(entry: &Value) -> Result<(String, String), Error> {
 
     validate_relative_target(&target, "font")?;
     Ok((source.to_string(), target))
+}
+
+fn parse_pkg_entry(entry: &Value) -> Result<String, Error> {
+    if let Some(path) = entry.as_str() {
+        return Ok(path.to_string());
+    }
+
+    let array = entry.as_array().ok_or_else(|| Error::InvalidArgument {
+        message: "unsupported cask pkg artifact shape".to_string(),
+    })?;
+    array
+        .first()
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .ok_or_else(|| Error::InvalidArgument {
+            message: "unsupported cask pkg source".to_string(),
+        })
 }
 
 fn validate_relative_target(target: &str, artifact_kind: &str) -> Result<(), Error> {
@@ -485,6 +534,28 @@ mod tests {
     }
 
     #[test]
+    fn resolve_cask_parses_pkg_artifacts() {
+        let cask = serde_json::json!({
+            "token": "pkg-test",
+            "version": "1.0.0",
+            "url": "https://example.com/pkg.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "pkg": ["Install Test.pkg"] },
+                { "pkg": [["Nested/Other.pkg"]] }
+            ]
+        });
+
+        let resolved = resolve_cask("pkg-test", &cask).unwrap();
+        assert!(resolved.binaries.is_empty());
+        assert!(resolved.apps.is_empty());
+        assert!(resolved.fonts.is_empty());
+        assert_eq!(resolved.pkgs.len(), 2);
+        assert_eq!(resolved.pkgs[0].source, "Install Test.pkg");
+        assert_eq!(resolved.pkgs[1].source, "Nested/Other.pkg");
+    }
+
+    #[test]
     fn resolve_cask_missing_required_field_is_invalid_argument() {
         let cask = serde_json::json!({
             "token": "test",
@@ -531,20 +602,18 @@ mod tests {
     #[test]
     fn resolve_cask_no_supported_artifacts_lists_found_types() {
         let cask = serde_json::json!({
-            "token": "pkg-only",
+            "token": "zap-only",
             "version": "1.0.0",
-            "url": "https://example.com/pkg-only.pkg",
+            "url": "https://example.com/zap-only.zip",
             "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             "artifacts": [
-                { "pkg": ["Pkg.pkg"] },
                 { "zap": [{ "trash": ["~/Library/Application Support/Pkg"] }] }
             ]
         });
 
-        let err = resolve_cask("pkg-only", &cask).unwrap_err();
+        let err = resolve_cask("zap-only", &cask).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("no supported artifacts"), "got: {msg}");
-        assert!(msg.contains("pkg"), "got: {msg}");
         assert!(msg.contains("zap"), "got: {msg}");
     }
 }

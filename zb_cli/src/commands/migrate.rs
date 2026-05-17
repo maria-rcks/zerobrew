@@ -509,14 +509,14 @@ mod tests {
                 })),
             },
             zb_io::HomebrewPackage {
-                name: "pkg-only".to_string(),
+                name: "zap-only".to_string(),
                 tap: "homebrew/cask".to_string(),
                 is_cask: true,
                 cask_json: Some(json!({
                     "version": "1.0.0",
-                    "url": "https://example.com/pkg-only.pkg",
+                    "url": "https://example.com/zap-only.zip",
                     "sha256": "b".repeat(64),
-                    "artifacts": [{ "pkg": ["Pkg.pkg"] }]
+                    "artifacts": [{ "zap": [{ "trash": ["~/Library/Application Support/Demo"] }] }]
                 })),
             },
         ];
@@ -525,7 +525,7 @@ mod tests {
 
         assert_eq!(supported.len(), 1);
         assert_eq!(supported[0].0, "demo");
-        assert_eq!(unsupported, vec!["pkg-only"]);
+        assert_eq!(unsupported, vec!["zap-only"]);
     }
 
     #[test]
