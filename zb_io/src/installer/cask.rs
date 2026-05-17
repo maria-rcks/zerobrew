@@ -435,11 +435,15 @@ fn parse_depends_on_values(cask: &Value, key: &str) -> Result<Vec<String>, Error
         });
     };
 
-    Ok(deps
-        .iter()
-        .filter_map(Value::as_str)
-        .map(ToString::to_string)
-        .collect())
+    deps.iter()
+        .map(|dep| {
+            dep.as_str()
+                .map(ToString::to_string)
+                .ok_or_else(|| Error::InvalidArgument {
+                    message: format!("unsupported cask depends_on {key} entry: {dep}"),
+                })
+        })
+        .collect()
 }
 
 fn artifact_entries(value: &Value) -> Result<Vec<&Value>, Error> {
@@ -589,7 +593,9 @@ fn parse_moved_entry(
             message: format!("cask {artifact_kind} artifact requires a target"),
         })?;
 
-    if artifact_kind != "artifact" {
+    if artifact_kind == "artifact" {
+        validate_relative_subpath(&target, artifact_kind)?;
+    } else {
         validate_relative_target(&target, artifact_kind)?;
     }
 
@@ -616,17 +622,26 @@ fn parse_installer_entry(entry: &Value) -> Result<CaskInstaller, Error> {
             .ok_or_else(|| Error::InvalidArgument {
                 message: "unsupported cask installer script without executable".to_string(),
             })?;
-        let args = script
-            .get("args")
-            .and_then(Value::as_array)
-            .map(|values| {
+        let args = match script.get("args") {
+            None => Vec::new(),
+            Some(value) => {
+                let values = value.as_array().ok_or_else(|| Error::InvalidArgument {
+                    message: format!("unsupported cask installer script args shape: {value}"),
+                })?;
                 values
                     .iter()
-                    .filter_map(Value::as_str)
-                    .map(ToString::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .map(|arg| {
+                        arg.as_str().map(ToString::to_string).ok_or_else(|| {
+                            Error::InvalidArgument {
+                                message: format!(
+                                    "unsupported cask installer script args entry: {arg}"
+                                ),
+                            }
+                        })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            }
+        };
         return Ok(CaskInstaller {
             kind: CaskInstallerKind::Script {
                 executable: executable.to_string(),
@@ -657,6 +672,41 @@ fn validate_relative_target(target: &str, artifact_kind: &str) -> Result<(), Err
             message: format!("unsupported cask {artifact_kind} target path '{target}'"),
         });
     }
+    Ok(())
+}
+
+fn validate_relative_subpath(target: &str, artifact_kind: &str) -> Result<(), Error> {
+    if target.contains('$') || target.contains('~') {
+        return Err(Error::InvalidArgument {
+            message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+        });
+    }
+
+    let path = std::path::Path::new(target);
+    if path.is_absolute() {
+        return Err(Error::InvalidArgument {
+            message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+        });
+    }
+
+    let mut has_component = false;
+    for component in path.components() {
+        match component {
+            std::path::Component::Normal(_) => has_component = true,
+            _ => {
+                return Err(Error::InvalidArgument {
+                    message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+                });
+            }
+        }
+    }
+
+    if !has_component {
+        return Err(Error::InvalidArgument {
+            message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+        });
+    }
+
     Ok(())
 }
 
@@ -879,6 +929,29 @@ mod tests {
     }
 
     #[test]
+    fn resolve_cask_rejects_unsafe_generic_artifact_targets() {
+        for target in [
+            "/tmp/example.conf",
+            "../example.conf",
+            ".",
+            "~/.config/example.conf",
+        ] {
+            let cask = serde_json::json!({
+                "token": "artifact-test",
+                "version": "1.0.0",
+                "url": "https://example.com/artifact.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "artifacts": [
+                    { "artifact": [["config/example.conf", {"target": target}]] }
+                ]
+            });
+
+            let err = resolve_cask("artifact-test", &cask).unwrap_err();
+            assert!(matches!(err, Error::InvalidArgument { .. }));
+        }
+    }
+
+    #[test]
     fn resolve_cask_parses_appimage_artifacts() {
         let cask = serde_json::json!({
             "token": "appimage-test",
@@ -921,6 +994,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_cask_rejects_malformed_depends_on_entries() {
+        let cask = serde_json::json!({
+            "token": "dependency-test",
+            "version": "1.0.0",
+            "url": "https://example.com/dependency.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "depends_on": {
+                "formula": ["openssl@3", {"name": "python@3.13"}]
+            },
+            "artifacts": [
+                { "binary": ["bin/tool"] }
+            ]
+        });
+
+        let err = resolve_cask("dependency-test", &cask).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgument { .. }));
+        assert!(err.to_string().contains("depends_on formula entry"));
+    }
+
+    #[test]
     fn resolve_cask_parses_installer_artifacts() {
         let cask = serde_json::json!({
             "token": "installer-test",
@@ -948,6 +1041,23 @@ mod tests {
                 args: vec!["--prefix".to_string(), "$HOMEBREW_PREFIX".to_string()]
             }
         );
+    }
+
+    #[test]
+    fn resolve_cask_rejects_malformed_installer_script_args() {
+        let cask = serde_json::json!({
+            "token": "installer-test",
+            "version": "1.0.0",
+            "url": "https://example.com/installer.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [
+                { "installer": [{ "script": { "executable": "install.sh", "args": ["--prefix", 42] } }] }
+            ]
+        });
+
+        let err = resolve_cask("installer-test", &cask).unwrap_err();
+        assert!(matches!(err, Error::InvalidArgument { .. }));
+        assert!(err.to_string().contains("installer script args entry"));
     }
 
     #[test]

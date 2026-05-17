@@ -2275,6 +2275,13 @@ mod tests {
             }],
             fonts: vec![],
             pkgs: vec![],
+            suites: vec![],
+            generic_artifacts: vec![],
+            app_images: vec![],
+            installers: vec![],
+            stage_only: false,
+            depends_on_formulas: vec![],
+            depends_on_casks: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
