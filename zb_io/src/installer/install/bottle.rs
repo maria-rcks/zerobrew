@@ -292,6 +292,7 @@ impl Installer {
         options: &CaskInstallOptions,
     ) -> Result<(), Error> {
         let mut cask = resolve_cask(token, &cask_json)?;
+        self.install_cask_dependencies(&cask, options).await?;
         if !options.binaries {
             cask.binaries.clear();
         }
@@ -368,6 +369,43 @@ impl Installer {
         tx.commit()?;
 
         cleanup.disarm();
+        Ok(())
+    }
+
+    async fn install_cask_dependencies(
+        &mut self,
+        cask: &crate::installer::cask::ResolvedCask,
+        options: &CaskInstallOptions,
+    ) -> Result<(), Error> {
+        if options
+            .dependency_stack
+            .iter()
+            .any(|token| token == &cask.token)
+        {
+            return Err(Error::InvalidArgument {
+                message: format!(
+                    "cask dependency cycle detected: {} -> {}",
+                    options.dependency_stack.join(" -> "),
+                    cask.token
+                ),
+            });
+        }
+
+        if !cask.depends_on_formulas.is_empty() {
+            let plan = self.plan(&cask.depends_on_formulas).await?;
+            self.execute(plan, true).await?;
+        }
+
+        for dependency in &cask.depends_on_casks {
+            let install_name = format!("cask:{dependency}");
+            if self.is_installed(&install_name) {
+                continue;
+            }
+            let mut dependency_options = options.clone();
+            dependency_options.dependency_stack.push(cask.token.clone());
+            Box::pin(self.install_casks_with_options(&[install_name], dependency_options)).await?;
+        }
+
         Ok(())
     }
 }
@@ -1760,6 +1798,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap();
@@ -1813,6 +1855,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         let err = stage_raw_cask_binary(&blob_path, &keg_path, &cask).unwrap_err();
@@ -1847,6 +1893,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1884,6 +1934,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         stage_raw_cask_pkg(&blob_path, &keg_path, &cask).unwrap();
@@ -1929,6 +1983,10 @@ mod tests {
             }],
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -1985,6 +2043,10 @@ mod tests {
             }],
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         link_cask_apps(&keg_path, &app_dir, &cask, false).unwrap();
@@ -2062,6 +2124,10 @@ mod tests {
                 },
             }],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         run_cask_installers(&keg_path, &prefix, &cask).unwrap();
@@ -2112,6 +2178,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -2165,6 +2235,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
@@ -2287,6 +2361,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         link_cask_apps(&keg_path, &app_dir, &cask, false).unwrap();
@@ -2332,6 +2410,10 @@ mod tests {
 
             installers: vec![],
             stage_only: false,
+
+            depends_on_formulas: vec![],
+
+            depends_on_casks: vec![],
         };
 
         link_cask_fonts(&keg_path, &font_dir, &cask, false).unwrap();

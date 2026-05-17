@@ -74,6 +74,8 @@ pub struct ResolvedCask {
     pub app_images: Vec<CaskAppImage>,
     pub installers: Vec<CaskInstaller>,
     pub stage_only: bool,
+    pub depends_on_formulas: Vec<String>,
+    pub depends_on_casks: Vec<String>,
 }
 
 pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
@@ -105,6 +107,8 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let app_images = parse_appimage_artifacts(cask)?;
     let installers = parse_installer_artifacts(cask)?;
     let stage_only = parse_stage_only_artifact(cask)?;
+    let depends_on_formulas = parse_depends_on_values(cask, "formula")?;
+    let depends_on_casks = parse_depends_on_values(cask, "cask")?;
     if binaries.is_empty()
         && apps.is_empty()
         && fonts.is_empty()
@@ -139,6 +143,8 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
         app_images,
         installers,
         stage_only,
+        depends_on_formulas,
+        depends_on_casks,
     })
 }
 
@@ -409,6 +415,31 @@ fn parse_stage_only_artifact(cask: &Value) -> Result<bool, Error> {
             .and_then(Value::as_bool)
             .unwrap_or(false)
     }))
+}
+
+fn parse_depends_on_values(cask: &Value, key: &str) -> Result<Vec<String>, Error> {
+    let Some(value) = cask
+        .get("depends_on")
+        .and_then(|depends_on| depends_on.get(key))
+    else {
+        return Ok(Vec::new());
+    };
+
+    if let Some(dep) = value.as_str() {
+        return Ok(vec![dep.to_string()]);
+    }
+
+    let Some(deps) = value.as_array() else {
+        return Err(Error::InvalidArgument {
+            message: format!("unsupported cask depends_on {key} shape"),
+        });
+    };
+
+    Ok(deps
+        .iter()
+        .filter_map(Value::as_str)
+        .map(ToString::to_string)
+        .collect())
 }
 
 fn artifact_entries(value: &Value) -> Result<Vec<&Value>, Error> {
@@ -863,6 +894,30 @@ mod tests {
         assert_eq!(resolved.app_images.len(), 1);
         assert_eq!(resolved.app_images[0].source, "Demo.AppImage");
         assert_eq!(resolved.app_images[0].target, "Demo");
+    }
+
+    #[test]
+    fn resolve_cask_parses_depends_on_formula_and_cask() {
+        let cask = serde_json::json!({
+            "token": "dependency-test",
+            "version": "1.0.0",
+            "url": "https://example.com/dependency.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "depends_on": {
+                "formula": ["openssl@3", "python@3.13"],
+                "cask": "xquartz"
+            },
+            "artifacts": [
+                { "binary": ["bin/tool"] }
+            ]
+        });
+
+        let resolved = resolve_cask("dependency-test", &cask).unwrap();
+        assert_eq!(
+            resolved.depends_on_formulas,
+            vec!["openssl@3".to_string(), "python@3.13".to_string()]
+        );
+        assert_eq!(resolved.depends_on_casks, vec!["xquartz".to_string()]);
     }
 
     #[test]

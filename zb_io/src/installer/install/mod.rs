@@ -67,6 +67,7 @@ pub struct CaskInstallOptions {
     pub app_dir: Option<PathBuf>,
     pub font_dir: Option<PathBuf>,
     pub appimage_dir: Option<PathBuf>,
+    pub(crate) dependency_stack: Vec<String>,
 }
 
 impl CaskInstallOptions {
@@ -78,6 +79,7 @@ impl CaskInstallOptions {
             app_dir: None,
             font_dir: None,
             appimage_dir: None,
+            dependency_stack: Vec::new(),
         }
     }
 }
@@ -355,7 +357,7 @@ impl Installer {
                 let token = name
                     .strip_prefix("cask:")
                     .expect("install_casks expects cask: prefixed names");
-                self.install_single_cask(token, &options).await?;
+                Box::pin(self.install_single_cask(token, &options)).await?;
                 installed += 1;
             }
             Ok(ExecuteResult { installed })
@@ -777,6 +779,93 @@ mod tests {
 
         assert!(installer.db.get_installed("mainpkg").is_some());
         assert!(installer.db.get_installed("deplib").is_some());
+    }
+
+    #[tokio::test]
+    async fn install_cask_installs_formula_dependencies() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+
+        let dep_bottle = create_bottle_tarball("deplib");
+        let dep_sha = sha256_hex(&dep_bottle);
+        let cask_binary = b"#!/bin/sh\necho cask";
+        let cask_sha = sha256_hex(cask_binary);
+
+        let tag = get_test_bottle_tag();
+        let dep_json = format!(
+            r#"{{"name":"deplib","versions":{{"stable":"1.0.0"}},"dependencies":[],"bottle":{{"stable":{{"files":{{"{}":{{"url":"{}/bottles/deplib-1.0.0.{}.bottle.tar.gz","sha256":"{}"}}}}}}}}}}"#,
+            tag,
+            mock_server.uri(),
+            tag,
+            dep_sha
+        );
+        let cask_json = format!(
+            r#"{{
+                "token": "dep-cask",
+                "version": "1.0.0",
+                "url": "{}/downloads/dep-cask",
+                "sha256": "{}",
+                "depends_on": {{ "formula": ["deplib"] }},
+                "artifacts": [{{ "binary": ["dep-cask"] }}]
+            }}"#,
+            mock_server.uri(),
+            cask_sha
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/formula/deplib.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&dep_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path(format!("/bottles/deplib-1.0.0.{}.bottle.tar.gz", tag)))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(dep_bottle))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/cask/dep-cask.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(&cask_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/downloads/dep-cask"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(cask_binary))
+            .mount(&mock_server)
+            .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_cask_base_url(format!("{}/cask", mock_server.uri()));
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        let mut installer = Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix.clone(),
+            root.join("locks"),
+        );
+
+        installer
+            .install(&["cask:dep-cask".to_string()], true)
+            .await
+            .unwrap();
+
+        assert!(installer.is_installed("deplib"));
+        assert!(installer.is_installed("cask:dep-cask"));
+        assert!(prefix.join("bin/deplib").exists());
+        assert!(prefix.join("bin/dep-cask").exists());
     }
 
     #[tokio::test]
