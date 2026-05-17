@@ -312,6 +312,17 @@ fn validate_relative_target(target: &str, artifact_kind: &str) -> Result<(), Err
             message: format!("unsupported cask {artifact_kind} target path '{target}'"),
         });
     }
+    let mut components = std::path::Path::new(target).components();
+    let Some(std::path::Component::Normal(name)) = components.next() else {
+        return Err(Error::InvalidArgument {
+            message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+        });
+    };
+    if components.next().is_some() || name.is_empty() {
+        return Err(Error::InvalidArgument {
+            message: format!("unsupported cask {artifact_kind} target path '{target}'"),
+        });
+    }
     Ok(())
 }
 
@@ -455,6 +466,22 @@ mod tests {
         assert_eq!(resolved.fonts[0].target, "Test-Regular.otf");
         assert_eq!(resolved.fonts[1].source, "Subdir/Test-Bold.otf");
         assert_eq!(resolved.fonts[1].target, "Renamed-Bold.otf");
+    }
+
+    #[test]
+    fn resolve_cask_rejects_dot_segment_targets() {
+        for target in [".", "..", ""] {
+            let cask = serde_json::json!({
+                "token": "test",
+                "version": "1.0.0",
+                "url": "https://example.com/test.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "artifacts": [{ "app": [["Test.app", { "target": target }]] }]
+            });
+
+            let err = resolve_cask("test", &cask).unwrap_err();
+            assert!(matches!(err, Error::InvalidArgument { .. }));
+        }
     }
 
     #[test]

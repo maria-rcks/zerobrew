@@ -50,6 +50,10 @@ impl Installer {
             name: formula_name.clone(),
         });
 
+        run_builtin_post_install(&self.prefix, install_name, &keg_path).inspect_err(|_| {
+            Self::cleanup_materialized(&self.cellar, formula_name, &version);
+        })?;
+
         let tx = self.db.transaction().inspect_err(|_| {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
@@ -71,8 +75,6 @@ impl Installer {
                 warn!(formula = %install_name, alias = %alias, error = %e, "failed to create opt alias link");
             }
         }
-
-        run_builtin_post_install(&self.prefix, install_name, &keg_path)?;
 
         if link && !item.formula.is_keg_only() {
             report(InstallProgress::LinkStarted {
@@ -226,6 +228,15 @@ impl Installer {
                 version = %version,
                 error = %e,
                 "failed to remove installed apps after install error"
+            );
+        }
+
+        if unlink && let Err(e) = uninstall_cask_fonts(keg_path) {
+            warn!(
+                formula = %name,
+                version = %version,
+                error = %e,
+                "failed to remove installed fonts after install error"
             );
         }
 
@@ -776,6 +787,20 @@ fn resolve_cask_binary_source_path(
                     "binary",
                 );
             }
+
+            if app.source != app.target {
+                let app_prefix = format!("/{}/", app.source);
+                if let Some(idx) = source.find(&app_prefix) {
+                    let suffix = &source[idx + app_prefix.len()..];
+                    let relative = format!("{}/{}", app.target, suffix);
+                    return resolve_relative_cask_path(
+                        &keg_path.join(CASK_APPS_DIR),
+                        cask,
+                        &relative,
+                        "binary",
+                    );
+                }
+            }
         }
     }
 
@@ -1209,6 +1234,46 @@ mod tests {
     }
 
     #[test]
+    fn stage_cask_artifacts_resolves_absolute_binary_sources_for_renamed_apps() {
+        let tmp = TempDir::new().unwrap();
+        let extracted_root = tmp.path().join("extract");
+        let app_binary_dir = extracted_root.join("Foo.app/Contents/MacOS");
+        fs::create_dir_all(&app_binary_dir).unwrap();
+        fs::write(app_binary_dir.join("fooctl"), b"#!/bin/sh\necho foo").unwrap();
+        fs::write(extracted_root.join("Foo.app/Contents/Info.plist"), b"plist").unwrap();
+
+        let keg_path = tmp.path().join("keg");
+        let cask = crate::installer::cask::ResolvedCask {
+            install_name: "cask:foo".to_string(),
+            token: "foo".to_string(),
+            version: "1.0.0".to_string(),
+            url: "https://example.com/foo.zip".to_string(),
+            sha256: "fff".to_string(),
+            binaries: vec![crate::installer::cask::CaskBinary {
+                source: "/Applications/Foo.app/Contents/MacOS/fooctl".to_string(),
+                target: "fooctl".to_string(),
+            }],
+            apps: vec![crate::installer::cask::CaskApp {
+                source: "Foo.app".to_string(),
+                target: "Bar.app".to_string(),
+            }],
+            fonts: vec![],
+        };
+
+        stage_cask_artifacts(&extracted_root, &keg_path, &cask).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(keg_path.join("bin/fooctl")).unwrap(),
+            "#!/bin/sh\necho foo"
+        );
+        assert!(
+            keg_path
+                .join("Applications/Bar.app/Contents/Info.plist")
+                .exists()
+        );
+    }
+
+    #[test]
     fn parses_hdiutil_mount_points() {
         let plist = r#"
         <plist version="1.0">
@@ -1318,5 +1383,36 @@ mod tests {
 
         uninstall_cask_fonts(&keg_path).unwrap();
         assert!(!font_dir.join("Test-Regular.otf").exists());
+    }
+
+    #[test]
+    fn cleanup_failed_install_removes_moved_cask_apps_and_fonts() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("prefix");
+        let linker = Linker::new(&prefix).unwrap();
+        let cellar = Cellar::new(&prefix).unwrap();
+        let keg_path = cellar.keg_path("cask:test", "1.0.0");
+
+        let app_target = tmp.path().join("Applications/Test.app");
+        fs::create_dir_all(app_target.join("Contents")).unwrap();
+        fs::write(app_target.join("Contents/Info.plist"), b"plist").unwrap();
+        let staged_app = keg_path.join("Applications/Test.app");
+        fs::create_dir_all(staged_app.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&app_target, &staged_app).unwrap();
+
+        let font_target = tmp.path().join("Fonts/Test-Regular.otf");
+        fs::create_dir_all(font_target.parent().unwrap()).unwrap();
+        fs::write(&font_target, b"font").unwrap();
+        let staged_font = keg_path.join("Fonts/Test-Regular.otf");
+        fs::create_dir_all(staged_font.parent().unwrap()).unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&font_target, &staged_font).unwrap();
+
+        Installer::cleanup_failed_install(&linker, &cellar, "cask:test", "1.0.0", &keg_path, true);
+
+        assert!(!app_target.exists());
+        assert!(!font_target.exists());
+        assert!(!keg_path.exists());
     }
 }

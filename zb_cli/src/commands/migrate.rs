@@ -38,15 +38,10 @@ pub async fn execute(
         .chain(&packages.non_core_formulas)
         .map(|f| f.name.clone())
         .collect();
-    let cask_jsons: Vec<(String, serde_json::Value)> = packages
-        .casks
+    let (cask_jsons, unsupported_casks) = supported_cask_jsons(&packages.casks);
+    let cask_install_names: Vec<String> = cask_jsons
         .iter()
-        .filter_map(|cask| cask.cask_json.clone().map(|json| (cask.name.clone(), json)))
-        .collect();
-    let cask_install_names: Vec<String> = packages
-        .casks
-        .iter()
-        .map(|cask| format!("cask:{}", cask.name))
+        .map(|(name, _)| format!("cask:{name}"))
         .collect();
     let cask_target_conflicts =
         cask_artifact_conflicts(&cask_jsons, installer.app_dir(), installer.font_dir())?;
@@ -95,15 +90,26 @@ pub async fn execute(
         ui.blank_line().map_err(ui_error)?;
     }
 
-    if !packages.casks.is_empty() {
-        ui.println(format!(
-            "The following {} casks will be migrated:",
-            packages.casks.len()
+    if !unsupported_casks.is_empty() {
+        ui.note(format!(
+            "Skipping {} unsupported cask(s):",
+            unsupported_casks.len()
         ))
         .map_err(ui_error)?;
-        for cask in &packages.casks {
-            ui.bullet(format!("{} ({})", cask.name, cask.tap))
-                .map_err(ui_error)?;
+        for name in &unsupported_casks {
+            ui.bullet(name).map_err(ui_error)?;
+        }
+        ui.blank_line().map_err(ui_error)?;
+    }
+
+    if !cask_jsons.is_empty() {
+        ui.println(format!(
+            "The following {} casks will be migrated:",
+            cask_jsons.len()
+        ))
+        .map_err(ui_error)?;
+        for (name, _) in &cask_jsons {
+            ui.bullet(name).map_err(ui_error)?;
         }
         ui.blank_line().map_err(ui_error)?;
     }
@@ -245,7 +251,9 @@ fn cask_artifact_conflicts(
     let mut conflicts = Vec::new();
 
     for (token, cask_json) in casks {
-        let cask = zb_io::resolve_cask(token, cask_json)?;
+        let Ok(cask) = zb_io::resolve_cask(token, cask_json) else {
+            continue;
+        };
         for app in &cask.apps {
             let target = app_dir.join(&app.target);
             if target.symlink_metadata().is_ok() {
@@ -261,6 +269,27 @@ fn cask_artifact_conflicts(
     }
 
     Ok(conflicts)
+}
+
+fn supported_cask_jsons(
+    casks: &[zb_io::HomebrewPackage],
+) -> (Vec<(String, serde_json::Value)>, Vec<String>) {
+    let mut supported = Vec::new();
+    let mut unsupported = Vec::new();
+
+    for cask in casks {
+        let Some(cask_json) = cask.cask_json.clone() else {
+            unsupported.push(cask.name.clone());
+            continue;
+        };
+
+        match zb_io::resolve_cask(&cask.name, &cask_json) {
+            Ok(_) => supported.push((cask.name.clone(), cask_json)),
+            Err(_) => unsupported.push(cask.name.clone()),
+        }
+    }
+
+    (supported, unsupported)
 }
 
 fn uninstall_homebrew_packages(
@@ -381,7 +410,7 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::cask_artifact_conflicts;
+    use super::{cask_artifact_conflicts, supported_cask_jsons};
 
     #[test]
     fn cask_artifact_conflicts_detects_existing_apps_and_fonts() {
@@ -429,5 +458,58 @@ mod tests {
             cask_artifact_conflicts(&casks, &tmp.path().join("Applications"), tmp.path()).unwrap();
 
         assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn cask_artifact_conflicts_skips_unsupported_casks() {
+        let tmp = TempDir::new().unwrap();
+        let casks = vec![(
+            "pkg-only".to_string(),
+            json!({
+                "version": "1.0.0",
+                "url": "https://example.com/pkg-only.pkg",
+                "sha256": "a".repeat(64),
+                "artifacts": [{ "pkg": ["Pkg.pkg"] }]
+            }),
+        )];
+
+        let conflicts =
+            cask_artifact_conflicts(&casks, &tmp.path().join("Applications"), tmp.path()).unwrap();
+
+        assert!(conflicts.is_empty());
+    }
+
+    #[test]
+    fn supported_cask_jsons_skips_unsupported_casks() {
+        let packages = vec![
+            zb_io::HomebrewPackage {
+                name: "demo".to_string(),
+                tap: "homebrew/cask".to_string(),
+                is_cask: true,
+                cask_json: Some(json!({
+                    "version": "1.0.0",
+                    "url": "https://example.com/demo.zip",
+                    "sha256": "a".repeat(64),
+                    "artifacts": [{ "app": ["Demo.app"] }]
+                })),
+            },
+            zb_io::HomebrewPackage {
+                name: "pkg-only".to_string(),
+                tap: "homebrew/cask".to_string(),
+                is_cask: true,
+                cask_json: Some(json!({
+                    "version": "1.0.0",
+                    "url": "https://example.com/pkg-only.pkg",
+                    "sha256": "b".repeat(64),
+                    "artifacts": [{ "pkg": ["Pkg.pkg"] }]
+                })),
+            },
+        ];
+
+        let (supported, unsupported) = supported_cask_jsons(&packages);
+
+        assert_eq!(supported.len(), 1);
+        assert_eq!(supported[0].0, "demo");
+        assert_eq!(unsupported, vec!["pkg-only"]);
     }
 }

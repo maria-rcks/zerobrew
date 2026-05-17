@@ -428,6 +428,7 @@ impl Linker {
     }
 
     pub fn link_opt_alias(&self, alias: &str, keg_path: &Path) -> Result<(), Error> {
+        validate_opt_alias(alias)?;
         let opt_link = self.opt_dir.join(alias);
         if opt_link.symlink_metadata().is_ok() {
             if let Ok(target) = fs::read_link(&opt_link) {
@@ -470,6 +471,23 @@ impl Linker {
         }
         false
     }
+}
+
+fn validate_opt_alias(alias: &str) -> Result<(), Error> {
+    let mut components = Path::new(alias).components();
+    let Some(std::path::Component::Normal(name)) = components.next() else {
+        return Err(Error::InvalidArgument {
+            message: format!("invalid opt alias '{alias}'"),
+        });
+    };
+
+    if components.next().is_some() || name.is_empty() {
+        return Err(Error::InvalidArgument {
+            message: format!("invalid opt alias '{alias}'"),
+        });
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -672,6 +690,23 @@ mod tests {
 
         assert_eq!(fs::read_link(prefix.join("opt/ruby")).unwrap(), keg);
         assert_eq!(fs::read_link(prefix.join("opt/ruby@4.0")).unwrap(), keg);
+    }
+
+    #[test]
+    fn link_opt_alias_rejects_path_segments() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path();
+        let linker = Linker::new(prefix).unwrap();
+        let keg = prefix.join("Cellar/ruby/4.0.4");
+        fs::create_dir_all(&keg).unwrap();
+
+        for alias in ["../evil", "/tmp/evil", ".", "..", "evil/path", ""] {
+            let err = linker.link_opt_alias(alias, &keg).unwrap_err();
+            assert!(matches!(err, Error::InvalidArgument { .. }));
+        }
+
+        assert!(!prefix.join("evil").exists());
+        assert!(!prefix.join("opt/evil").exists());
     }
 
     #[test]
