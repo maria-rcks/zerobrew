@@ -135,9 +135,17 @@ pub async fn execute(
     if !formula_names.is_empty() {
         crate::commands::install::execute(
             installer,
-            formula_names.clone(),
-            false, // no_link
-            false, // build_from_source
+            crate::commands::install::InstallRequest {
+                formulas: formula_names.clone(),
+                no_link: false,
+                build_from_source: false,
+                cask: false,
+                formula: false,
+                appdir: None,
+                fontdir: None,
+                no_binaries: false,
+                force: false,
+            },
             ui,
         )
         .await

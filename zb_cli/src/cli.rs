@@ -102,6 +102,18 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's')]
         build_from_source: bool,
+        #[arg(long, conflicts_with = "formula")]
+        cask: bool,
+        #[arg(long, conflicts_with = "cask")]
+        formula: bool,
+        #[arg(long)]
+        appdir: Option<PathBuf>,
+        #[arg(long)]
+        fontdir: Option<PathBuf>,
+        #[arg(long)]
+        no_binaries: bool,
+        #[arg(long)]
+        force: bool,
     },
     Bundle {
         #[command(subcommand)]
@@ -112,6 +124,10 @@ pub enum Commands {
         formulas: Vec<String>,
         #[arg(long)]
         all: bool,
+        #[arg(long, conflicts_with = "formula")]
+        cask: bool,
+        #[arg(long, conflicts_with = "cask")]
+        formula: bool,
     },
     Migrate {
         #[arg(long, short = 'y')]

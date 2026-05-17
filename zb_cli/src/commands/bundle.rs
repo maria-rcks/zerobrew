@@ -39,7 +39,22 @@ async fn install_from_file(
 
     let start = Instant::now();
     for formula in formulas {
-        install::execute(installer, vec![formula], no_link, false, ui).await?;
+        install::execute(
+            installer,
+            install::InstallRequest {
+                formulas: vec![formula],
+                no_link,
+                build_from_source: false,
+                cask: false,
+                formula: false,
+                appdir: None,
+                fontdir: None,
+                no_binaries: false,
+                force: false,
+            },
+            ui,
+        )
+        .await?;
     }
 
     println!(

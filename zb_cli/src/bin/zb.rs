@@ -57,12 +57,26 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formulas,
             no_link,
             build_from_source,
+            cask,
+            formula,
+            appdir,
+            fontdir,
+            no_binaries,
+            force,
         } => {
             commands::install::execute(
                 &mut installer,
-                formulas,
-                no_link,
-                build_from_source,
+                commands::install::InstallRequest {
+                    formulas,
+                    no_link,
+                    build_from_source,
+                    cask,
+                    formula,
+                    appdir,
+                    fontdir,
+                    no_binaries,
+                    force,
+                },
                 &mut ui,
             )
             .await
@@ -70,9 +84,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Bundle { command } => {
             commands::bundle::execute(&mut installer, command, &mut ui).await
         }
-        Commands::Uninstall { formulas, all } => {
-            commands::uninstall::execute(&mut installer, formulas, all, &mut ui)
-        }
+        Commands::Uninstall {
+            formulas,
+            all,
+            cask,
+            formula,
+        } => commands::uninstall::execute(&mut installer, formulas, all, cask, formula, &mut ui),
         Commands::Migrate { yes, force } => {
             commands::migrate::execute(&mut installer, yes, force, &mut ui).await
         }

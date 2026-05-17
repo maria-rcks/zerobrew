@@ -13,9 +13,9 @@ pub use build::{BuildExecutor, DepInfo};
 pub use cellar::{Cellar, LinkedFile, Linker, MaterializedKeg};
 pub use extraction::extract_tarball;
 pub use installer::{
-    DiagnosticReport, ExecuteResult, HomebrewMigrationPackages, HomebrewPackage, InstallPlan,
-    Installer, OutdatedPackage, RepairSummary, ResolvedCask, create_installer,
-    get_homebrew_packages, resolve_cask,
+    CaskInstallOptions, DiagnosticReport, ExecuteResult, HomebrewMigrationPackages,
+    HomebrewPackage, InstallPlan, Installer, OutdatedPackage, RepairSummary, ResolvedCask,
+    create_installer, get_homebrew_packages, resolve_cask,
 };
 pub use network::{
     ApiCache, ApiClient, DownloadProgressCallback, DownloadRequest, Downloader, ParallelDownloader,

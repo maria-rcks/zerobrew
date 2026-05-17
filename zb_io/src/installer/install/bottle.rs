@@ -12,7 +12,7 @@ use crate::network::download::{DownloadProgressCallback, DownloadRequest, Downlo
 use crate::progress::InstallProgress;
 use crate::storage::store::Store;
 
-use super::{Installer, MAX_CORRUPTION_RETRIES, PlannedInstall};
+use super::{CaskInstallOptions, Installer, MAX_CORRUPTION_RETRIES, PlannedInstall};
 
 const CASK_APPS_DIR: &str = "Applications";
 const CASK_FONTS_DIR: &str = "Fonts";
@@ -230,6 +230,14 @@ impl Installer {
                 "failed to remove installed apps after install error"
             );
         }
+        if unlink && let Err(e) = uninstall_cask_fonts(keg_path) {
+            warn!(
+                formula = %name,
+                version = %version,
+                error = %e,
+                "failed to remove installed fonts after install error"
+            );
+        }
 
         if unlink && let Err(e) = uninstall_cask_fonts(keg_path) {
             warn!(
@@ -253,10 +261,10 @@ impl Installer {
     pub(super) async fn install_single_cask(
         &mut self,
         token: &str,
-        link: bool,
+        options: &CaskInstallOptions,
     ) -> Result<(), Error> {
         let cask_json = self.api_client.get_cask(token).await?;
-        self.install_single_cask_from_json(token, cask_json, link)
+        self.install_single_cask_from_json_with_options(token, cask_json, options)
             .await
     }
 
@@ -266,7 +274,24 @@ impl Installer {
         cask_json: serde_json::Value,
         link: bool,
     ) -> Result<(), Error> {
-        let cask = resolve_cask(token, &cask_json)?;
+        self.install_single_cask_from_json_with_options(
+            token,
+            cask_json,
+            &CaskInstallOptions::new(link),
+        )
+        .await
+    }
+
+    pub(super) async fn install_single_cask_from_json_with_options(
+        &mut self,
+        token: &str,
+        cask_json: serde_json::Value,
+        options: &CaskInstallOptions,
+    ) -> Result<(), Error> {
+        let mut cask = resolve_cask(token, &cask_json)?;
+        if !options.binaries {
+            cask.binaries.clear();
+        }
 
         let blob_path = self
             .downloader
@@ -287,7 +312,7 @@ impl Installer {
             &cask.install_name,
             &cask.version,
             &keg_path,
-            link,
+            options.link,
         );
 
         if crate::extraction::is_archive(&blob_path)? {
@@ -301,10 +326,10 @@ impl Installer {
             copy_path_recursive(&stored, &keg_path)?;
         }
 
-        let linked_files = if link {
+        let linked_files = if options.link {
             let linked_files = self.linker.link_keg(&keg_path)?;
-            link_cask_apps(&keg_path, self.app_dir(), &cask)?;
-            link_cask_fonts(&keg_path, self.font_dir(), &cask)?;
+            link_cask_apps(&keg_path, self.app_dir(), &cask, options.force)?;
+            link_cask_fonts(&keg_path, self.font_dir(), &cask, options.force)?;
             linked_files
         } else {
             Vec::new()
@@ -874,6 +899,7 @@ fn link_cask_apps(
     keg_path: &Path,
     app_dir: &Path,
     cask: &crate::installer::cask::ResolvedCask,
+    force: bool,
 ) -> Result<(), Error> {
     if cask.apps.is_empty() {
         return Ok(());
@@ -896,12 +922,17 @@ fn link_cask_apps(
         }
 
         if target.symlink_metadata().is_ok() {
-            return Err(Error::LinkConflict {
-                conflicts: vec![zb_core::ConflictedLink {
-                    path: target,
-                    owned_by: None,
-                }],
-            });
+            if force {
+                remove_path_any(&target)
+                    .map_err(Error::store("failed to replace existing cask app"))?;
+            } else {
+                return Err(Error::LinkConflict {
+                    conflicts: vec![zb_core::ConflictedLink {
+                        path: target,
+                        owned_by: None,
+                    }],
+                });
+            }
         }
 
         move_cask_app_to_target(&source, &target)?;
@@ -914,6 +945,7 @@ fn link_cask_fonts(
     keg_path: &Path,
     font_dir: &Path,
     cask: &crate::installer::cask::ResolvedCask,
+    force: bool,
 ) -> Result<(), Error> {
     if cask.fonts.is_empty() {
         return Ok(());
@@ -936,12 +968,17 @@ fn link_cask_fonts(
         }
 
         if target.symlink_metadata().is_ok() {
-            return Err(Error::LinkConflict {
-                conflicts: vec![zb_core::ConflictedLink {
-                    path: target,
-                    owned_by: None,
-                }],
-            });
+            if force {
+                remove_path_any(&target)
+                    .map_err(Error::store("failed to replace existing cask font"))?;
+            } else {
+                return Err(Error::LinkConflict {
+                    conflicts: vec![zb_core::ConflictedLink {
+                        path: target,
+                        owned_by: None,
+                    }],
+                });
+            }
         }
 
         move_cask_artifact_to_target(&source, &target, "font")?;
@@ -1337,7 +1374,7 @@ mod tests {
             fonts: vec![],
         };
 
-        link_cask_apps(&keg_path, &app_dir, &cask).unwrap();
+        link_cask_apps(&keg_path, &app_dir, &cask, false).unwrap();
 
         assert!(app_dir.join("Test.app/Contents/Info.plist").exists());
         assert!(staged_app.is_symlink());
@@ -1373,7 +1410,7 @@ mod tests {
             }],
         };
 
-        link_cask_fonts(&keg_path, &font_dir, &cask).unwrap();
+        link_cask_fonts(&keg_path, &font_dir, &cask, false).unwrap();
 
         assert_eq!(
             fs::read_to_string(font_dir.join("Test-Regular.otf")).unwrap(),

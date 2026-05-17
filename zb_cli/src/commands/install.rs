@@ -1,21 +1,35 @@
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
-use zb_io::{InstallProgress, ProgressCallback};
+use zb_io::{CaskInstallOptions, InstallProgress, ProgressCallback};
 
 use crate::ui::StdUi;
-use crate::utils::{normalize_formula_name, suggest_homebrew, suggest_missing_formula_matches};
+use crate::utils::{
+    PackageKind, normalize_package_name, suggest_homebrew, suggest_missing_formula_matches,
+};
+
+pub struct InstallRequest {
+    pub formulas: Vec<String>,
+    pub no_link: bool,
+    pub build_from_source: bool,
+    pub cask: bool,
+    pub formula: bool,
+    pub appdir: Option<PathBuf>,
+    pub fontdir: Option<PathBuf>,
+    pub no_binaries: bool,
+    pub force: bool,
+}
 
 pub async fn execute(
     installer: &mut zb_io::Installer,
-    formulas: Vec<String>,
-    no_link: bool,
-    build_from_source: bool,
+    request: InstallRequest,
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
     let start = Instant::now();
+    let formulas = request.formulas;
     ui.heading(format!(
         "Installing {}...",
         style(formulas.join(", ")).bold()
@@ -24,8 +38,15 @@ pub async fn execute(
 
     let mut normalized_names = Vec::new();
     let mut cask_names = Vec::new();
+    let kind = if request.cask {
+        PackageKind::Cask
+    } else if request.formula {
+        PackageKind::Formula
+    } else {
+        PackageKind::Auto
+    };
     for formula in &formulas {
-        match normalize_formula_name(formula) {
+        match normalize_package_name(formula, kind) {
             Ok(name) => {
                 if name.starts_with("cask:") {
                     cask_names.push(name);
@@ -44,7 +65,7 @@ pub async fn execute(
 
     if !normalized_names.is_empty() {
         let plan = match installer
-            .plan_with_options(&normalized_names, build_from_source)
+            .plan_with_options(&normalized_names, request.build_from_source)
             .await
         {
             Ok(p) => p,
@@ -175,7 +196,7 @@ pub async fn execute(
         }));
 
         let result_val = installer
-            .execute_with_progress(plan, !no_link, Some(progress_callback))
+            .execute_with_progress(plan, !request.no_link, Some(progress_callback))
             .await;
 
         {
@@ -234,7 +255,14 @@ pub async fn execute(
             cask_names.len()
         ))
         .map_err(ui_error)?;
-        let result = installer.install_casks(&cask_names, !no_link).await?;
+        let mut options = CaskInstallOptions::new(!request.no_link);
+        options.binaries = !request.no_binaries;
+        options.force = request.force;
+        options.app_dir = request.appdir;
+        options.font_dir = request.fontdir;
+        let result = installer
+            .install_casks_with_options(&cask_names, options)
+            .await?;
         installed_count += result.installed;
     }
 

@@ -2,7 +2,18 @@ use console::style;
 use std::path::PathBuf;
 use zb_io::Installer;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackageKind {
+    Auto,
+    Formula,
+    Cask,
+}
+
 pub fn normalize_formula_name(name: &str) -> Result<String, zb_core::Error> {
+    normalize_package_name(name, PackageKind::Auto)
+}
+
+pub fn normalize_package_name(name: &str, kind: PackageKind) -> Result<String, zb_core::Error> {
     let trimmed = name.trim();
     if trimmed.is_empty() {
         return Err(zb_core::Error::MissingFormula {
@@ -11,6 +22,11 @@ pub fn normalize_formula_name(name: &str) -> Result<String, zb_core::Error> {
     }
 
     if let Some(token) = trimmed.strip_prefix("cask:") {
+        if matches!(kind, PackageKind::Formula) {
+            return Err(zb_core::Error::InvalidArgument {
+                message: format!("'{trimmed}' is a cask, but --formula was specified"),
+            });
+        }
         let token = token.trim();
         if token.is_empty() {
             return Err(zb_core::Error::InvalidArgument {
@@ -28,14 +44,26 @@ pub fn normalize_formula_name(name: &str) -> Result<String, zb_core::Error> {
         }
 
         if tap == "homebrew/core" {
+            if matches!(kind, PackageKind::Cask) {
+                return Ok(format!("cask:{formula}"));
+            }
             return Ok(formula.to_string());
         }
 
         if tap == "homebrew/cask" {
+            if matches!(kind, PackageKind::Formula) {
+                return Err(zb_core::Error::InvalidArgument {
+                    message: format!("'{trimmed}' is a cask, but --formula was specified"),
+                });
+            }
             return Ok(format!("cask:{formula}"));
         }
 
         return Ok(trimmed.to_string());
+    }
+
+    if matches!(kind, PackageKind::Cask) {
+        return Ok(format!("cask:{trimmed}"));
     }
 
     Ok(trimmed.to_string())
@@ -168,7 +196,8 @@ mod tests {
     use zb_io::{Installer, Linker};
 
     use super::{
-        format_formula_suggestions, normalize_formula_name, suggest_missing_formula_matches,
+        PackageKind, format_formula_suggestions, normalize_formula_name, normalize_package_name,
+        suggest_missing_formula_matches,
     };
 
     #[test]
@@ -193,6 +222,20 @@ mod tests {
             normalize_formula_name("homebrew/cask/docker-desktop").unwrap(),
             "cask:docker-desktop".to_string()
         );
+    }
+
+    #[test]
+    fn normalize_cask_selection_prefixes_plain_token() {
+        assert_eq!(
+            normalize_package_name("firefox", PackageKind::Cask).unwrap(),
+            "cask:firefox".to_string()
+        );
+    }
+
+    #[test]
+    fn normalize_formula_selection_rejects_cask_token() {
+        let err = normalize_package_name("cask:firefox", PackageKind::Formula).unwrap_err();
+        assert!(matches!(err, zb_core::Error::InvalidArgument { .. }));
     }
 
     #[test]

@@ -1,11 +1,13 @@
 use crate::ui::StdUi;
-use crate::utils::normalize_formula_name;
+use crate::utils::{PackageKind, normalize_package_name};
 use console::style;
 
 pub fn execute(
     installer: &mut zb_io::Installer,
     formulas: Vec<String>,
     all: bool,
+    cask: bool,
+    formula: bool,
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
     let formulas = if all {
@@ -17,8 +19,15 @@ pub fn execute(
         installed.into_iter().map(|k| k.name).collect()
     } else {
         let mut normalized = Vec::with_capacity(formulas.len());
+        let kind = if cask {
+            PackageKind::Cask
+        } else if formula {
+            PackageKind::Formula
+        } else {
+            PackageKind::Auto
+        };
         for formula in formulas {
-            normalized.push(normalize_formula_name(&formula)?);
+            normalized.push(normalize_package_name(&formula, kind)?);
         }
         normalized
     };

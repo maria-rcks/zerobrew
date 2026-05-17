@@ -58,6 +58,27 @@ pub struct ExecuteResult {
     pub installed: usize,
 }
 
+#[derive(Debug, Clone)]
+pub struct CaskInstallOptions {
+    pub link: bool,
+    pub binaries: bool,
+    pub force: bool,
+    pub app_dir: Option<PathBuf>,
+    pub font_dir: Option<PathBuf>,
+}
+
+impl CaskInstallOptions {
+    pub fn new(link: bool) -> Self {
+        Self {
+            link,
+            binaries: true,
+            force: false,
+            app_dir: None,
+            font_dir: None,
+        }
+    }
+}
+
 /// A package that has a newer version available upstream.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct OutdatedPackage {
@@ -294,18 +315,43 @@ impl Installer {
         names: &[String],
         link: bool,
     ) -> Result<ExecuteResult, Error> {
+        self.install_casks_with_options(names, CaskInstallOptions::new(link))
+            .await
+    }
+
+    pub async fn install_casks_with_options(
+        &mut self,
+        names: &[String],
+        options: CaskInstallOptions,
+    ) -> Result<ExecuteResult, Error> {
         let mut installed = 0usize;
-        for name in names {
-            if self.is_installed(name) {
-                continue;
-            }
-            let token = name
-                .strip_prefix("cask:")
-                .expect("install_casks expects cask: prefixed names");
-            self.install_single_cask(token, link).await?;
-            installed += 1;
+        let original_app_dir = self.app_dir.clone();
+        let original_font_dir = self.font_dir.clone();
+        if let Some(app_dir) = &options.app_dir {
+            self.app_dir = app_dir.clone();
         }
-        Ok(ExecuteResult { installed })
+        if let Some(font_dir) = &options.font_dir {
+            self.font_dir = font_dir.clone();
+        }
+
+        let result = async {
+            for name in names {
+                if self.is_installed(name) {
+                    continue;
+                }
+                let token = name
+                    .strip_prefix("cask:")
+                    .expect("install_casks expects cask: prefixed names");
+                self.install_single_cask(token, &options).await?;
+                installed += 1;
+            }
+            Ok(ExecuteResult { installed })
+        }
+        .await;
+
+        self.app_dir = original_app_dir;
+        self.font_dir = original_font_dir;
+        result
     }
 
     pub async fn install_casks_from_json(
