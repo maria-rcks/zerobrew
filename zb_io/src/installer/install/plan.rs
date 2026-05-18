@@ -46,6 +46,18 @@ impl Installer {
                     },
                 }
             };
+
+            if let Some(installed) = self.db.get_installed(&install_name)
+                && self.installed_keg_exists(&installed)
+                && installed.version == formula.effective_version()
+                && match &method {
+                    InstallMethod::Bottle(bottle) => installed.store_key == bottle.sha256,
+                    InstallMethod::Source(_) => installed.store_key.starts_with("source:"),
+                }
+            {
+                continue;
+            }
+
             items.push(PlannedInstall {
                 install_name,
                 formula,
@@ -130,6 +142,96 @@ mod tests {
     use crate::storage::db::Database;
     use crate::storage::store::Store;
     use crate::{Installer, Linker};
+
+    fn test_installer(
+        root: &std::path::Path,
+        prefix: &std::path::Path,
+        api_url: String,
+    ) -> Installer {
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url(api_url).unwrap();
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(root).unwrap();
+        let cellar = Cellar::new(root).unwrap();
+        let linker = Linker::new(prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix.to_path_buf(),
+            root.join("locks"),
+        )
+    }
+
+    fn bottle_formula_json(name: &str, version: &str, sha256: &str) -> String {
+        let tag = get_test_bottle_tag();
+        format!(
+            r#"{{
+                "name": "{}",
+                "versions": {{ "stable": "{}" }},
+                "dependencies": [],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{}": {{
+                                "url": "https://example.com/{}.bottle.tar.gz",
+                                "sha256": "{}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            name, version, tag, name, sha256
+        )
+    }
+
+    fn source_formula_json(name: &str, version: &str) -> String {
+        format!(
+            r#"{{
+                "name": "{}",
+                "versions": {{ "stable": "{}" }},
+                "dependencies": [],
+                "urls": {{
+                    "stable": {{
+                        "url": "https://example.com/{}-{}.tar.gz",
+                        "checksum": "source-checksum"
+                    }}
+                }},
+                "ruby_source_path": "Formula/{}/{}.rb",
+                "bottle": {{ "stable": {{ "files": {{}} }} }}
+            }}"#,
+            name,
+            version,
+            name,
+            version,
+            &name[..1],
+            name
+        )
+    }
+
+    async fn mount_formula(mock_server: &MockServer, name: &str, body: String) {
+        Mock::given(method("GET"))
+            .and(path(format!("/formula/{}.json", name)))
+            .respond_with(ResponseTemplate::new(200).set_body_string(body))
+            .mount(mock_server)
+            .await;
+    }
+
+    fn record_installed(installer: &mut Installer, name: &str, version: &str, store_key: &str) {
+        let tx = installer.db.transaction().unwrap();
+        tx.record_install(name, version, store_key).unwrap();
+        tx.commit().unwrap();
+    }
+
+    fn create_installed_keg(installer: &Installer, name: &str, version: &str) {
+        fs::create_dir_all(installer.keg_path(name, version)).unwrap();
+    }
 
     #[tokio::test]
     async fn plans_tapped_formula_with_core_dependency() {
@@ -358,6 +460,132 @@ end
             plan.items[0].method,
             zb_core::InstallMethod::Bottle(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn skips_installed_bottle_when_version_and_store_key_match() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        mount_formula(
+            &mock_server,
+            "installed",
+            bottle_formula_json("installed", "1.0.0", sha),
+        )
+        .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+        record_installed(&mut installer, "installed", "1.0.0", sha);
+        create_installed_keg(&installer, "installed", "1.0.0");
+
+        let plan = installer.plan(&["installed".to_string()]).await.unwrap();
+
+        assert!(plan.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_installed_source_build_when_version_matches() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        mount_formula(
+            &mock_server,
+            "sourceonly",
+            source_formula_json("sourceonly", "1.0.0"),
+        )
+        .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+        record_installed(
+            &mut installer,
+            "sourceonly",
+            "1.0.0",
+            "source:sourceonly:1.0.0",
+        );
+        create_installed_keg(&installer, "sourceonly", "1.0.0");
+
+        let plan = installer.plan(&["sourceonly".to_string()]).await.unwrap();
+
+        assert!(plan.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replans_when_installed_version_differs() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        mount_formula(
+            &mock_server,
+            "updatable",
+            bottle_formula_json("updatable", "1.0.0", sha),
+        )
+        .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+        record_installed(&mut installer, "updatable", "0.9.0", sha);
+        create_installed_keg(&installer, "updatable", "0.9.0");
+
+        let plan = installer.plan(&["updatable".to_string()]).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].install_name, "updatable");
+    }
+
+    #[tokio::test]
+    async fn replans_when_installed_store_key_differs() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let sha = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        mount_formula(
+            &mock_server,
+            "changed",
+            bottle_formula_json("changed", "1.0.0", sha),
+        )
+        .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+        record_installed(&mut installer, "changed", "1.0.0", "old-sha");
+        create_installed_keg(&installer, "changed", "1.0.0");
+
+        let plan = installer.plan(&["changed".to_string()]).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].install_name, "changed");
+    }
+
+    #[tokio::test]
+    async fn replans_when_installed_keg_is_missing() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let sha = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+        mount_formula(
+            &mock_server,
+            "stale",
+            bottle_formula_json("stale", "1.0.0", sha),
+        )
+        .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+        record_installed(&mut installer, "stale", "1.0.0", sha);
+
+        let plan = installer.plan(&["stale".to_string()]).await.unwrap();
+
+        assert_eq!(plan.items.len(), 1);
+        assert_eq!(plan.items[0].install_name, "stale");
     }
 
     #[tokio::test]
