@@ -15,46 +15,15 @@ impl Installer {
         names: &[String],
         build_from_source: bool,
     ) -> Result<InstallPlan, Error> {
-        let formulas = self.fetch_all_formulas(names).await?;
+        let formulas = self.fetch_all_formulas(names, build_from_source).await?;
         let ordered = zb_core::resolve_closure(names, &formulas)?;
 
         let mut items = Vec::with_capacity(ordered.len());
         for install_name in ordered {
             let formula = formulas.get(&install_name).cloned().unwrap();
-            let method = if build_from_source {
-                match BuildPlan::from_formula(&formula, &self.prefix) {
-                    Some(plan) => InstallMethod::Source(plan),
-                    None => match select_bottle(&formula) {
-                        Ok(bottle) => InstallMethod::Bottle(bottle),
-                        Err(_) => {
-                            return Err(Error::UnsupportedBottle {
-                                name: formula.name.clone(),
-                            });
-                        }
-                    },
-                }
-            } else {
-                match select_bottle(&formula) {
-                    Ok(bottle) => InstallMethod::Bottle(bottle),
-                    Err(_) => match BuildPlan::from_formula(&formula, &self.prefix) {
-                        Some(plan) => InstallMethod::Source(plan),
-                        None => {
-                            return Err(Error::UnsupportedBottle {
-                                name: formula.name.clone(),
-                            });
-                        }
-                    },
-                }
-            };
+            let method = self.install_method_for_formula(&formula, build_from_source)?;
 
-            if let Some(installed) = self.db.get_installed(&install_name)
-                && self.installed_keg_exists(&installed)
-                && installed.version == formula.effective_version()
-                && match &method {
-                    InstallMethod::Bottle(bottle) => installed.store_key == bottle.sha256,
-                    InstallMethod::Source(_) => installed.store_key.starts_with("source:"),
-                }
-            {
+            if self.installed_formula_is_current(&install_name, &formula, &method) {
                 continue;
             }
 
@@ -71,6 +40,7 @@ impl Installer {
     async fn fetch_all_formulas(
         &self,
         names: &[String],
+        build_from_source: bool,
     ) -> Result<BTreeMap<String, Formula>, Error> {
         use std::collections::HashSet;
 
@@ -113,9 +83,12 @@ impl Installer {
                     continue;
                 }
 
-                for dep in &formula.dependencies {
-                    if !fetched.contains(dep) && !to_fetch.contains(dep) {
-                        to_fetch.push(dep.clone());
+                let method = self.install_method_for_formula(&formula, build_from_source)?;
+                if !self.installed_formula_is_current(&batch[i], &formula, &method) {
+                    for dep in &formula.dependencies {
+                        if !fetched.contains(dep) && !to_fetch.contains(dep) {
+                            to_fetch.push(dep.clone());
+                        }
                     }
                 }
 
@@ -124,6 +97,53 @@ impl Installer {
         }
 
         Ok(formulas)
+    }
+
+    fn install_method_for_formula(
+        &self,
+        formula: &Formula,
+        build_from_source: bool,
+    ) -> Result<InstallMethod, Error> {
+        if build_from_source {
+            match BuildPlan::from_formula(formula, &self.prefix) {
+                Some(plan) => Ok(InstallMethod::Source(plan)),
+                None => select_bottle(formula)
+                    .map(InstallMethod::Bottle)
+                    .map_err(|_| Error::UnsupportedBottle {
+                        name: formula.name.clone(),
+                    }),
+            }
+        } else {
+            match select_bottle(formula) {
+                Ok(bottle) => Ok(InstallMethod::Bottle(bottle)),
+                Err(_) => BuildPlan::from_formula(formula, &self.prefix).map_or_else(
+                    || {
+                        Err(Error::UnsupportedBottle {
+                            name: formula.name.clone(),
+                        })
+                    },
+                    |plan| Ok(InstallMethod::Source(plan)),
+                ),
+            }
+        }
+    }
+
+    fn installed_formula_is_current(
+        &self,
+        install_name: &str,
+        formula: &Formula,
+        method: &InstallMethod,
+    ) -> bool {
+        self.db
+            .get_installed(install_name)
+            .is_some_and(|installed| {
+                self.installed_keg_exists(&installed)
+                    && installed.version == formula.effective_version()
+                    && match method {
+                        InstallMethod::Bottle(bottle) => installed.store_key == bottle.sha256,
+                        InstallMethod::Source(_) => installed.store_key.starts_with("source:"),
+                    }
+            })
     }
 }
 
@@ -484,6 +504,48 @@ end
         let plan = installer.plan(&["installed".to_string()]).await.unwrap();
 
         assert!(plan.items.is_empty());
+    }
+
+    #[tokio::test]
+    async fn skips_installed_bottle_without_fetching_dependencies() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let sha = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee";
+        let formula_json = format!(
+            r#"{{
+                "name": "installed",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": ["slowdep"],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{}": {{
+                                "url": "https://example.com/installed.bottle.tar.gz",
+                                "sha256": "{}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag, sha
+        );
+
+        mount_formula(&mock_server, "installed", formula_json).await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+        record_installed(&mut installer, "installed", "1.0.0", sha);
+        create_installed_keg(&installer, "installed", "1.0.0");
+
+        let plan = installer.plan(&["installed".to_string()]).await.unwrap();
+
+        assert!(plan.items.is_empty());
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/formula/installed.json");
     }
 
     #[tokio::test]
