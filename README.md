@@ -7,10 +7,9 @@
   <a href="README.zh.md">中文</a>
 </p>
 
-[![Lint](https://github.com/lucasgelfond/zerobrew/actions/workflows/ci.yml/badge.svg)](https://github.com/lucasgelfond/zerobrew/actions/workflows/ci.yml)
-[![Test](https://github.com/lucasgelfond/zerobrew/actions/workflows/test.yml/badge.svg)](https://github.com/lucasgelfond/zerobrew/actions/workflows/test.yml)
-[![Release](https://img.shields.io/github/v/release/lucasgelfond/zerobrew?display_name=tag)](https://github.com/lucasgelfond/zerobrew/releases)
-[![Discord](https://img.shields.io/badge/Discord-Join-5865F2?logo=discord&logoColor=white)](https://discord.gg/ZaPYwm9zaw)
+[![Lint](https://github.com/autom8n/zerobrew/actions/workflows/ci.yml/badge.svg)](https://github.com/autom8n/zerobrew/actions/workflows/ci.yml)
+[![Test](https://github.com/autom8n/zerobrew/actions/workflows/test.yml/badge.svg)](https://github.com/autom8n/zerobrew/actions/workflows/test.yml)
+[![Release](https://img.shields.io/github/v/release/autom8n/zerobrew?display_name=tag)](https://github.com/autom8n/zerobrew/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE-MIT.md)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](./LICENSE-APACHE.md)
 
@@ -31,8 +30,20 @@ After install, run the `export` command it prints (or restart your terminal).
 Or via Homebrew:
 
 ```bash
-brew install lucasgelfond/zerobrew/zerobrew
+brew install autom8n/zerobrew/zerobrew
 ```
+
+## Project direction
+
+This repository is maintained as an independent fork of the original
+[`lucasgelfond/zerobrew`](https://github.com/lucasgelfond/zerobrew) project.
+The fork keeps the original license and contribution history intact while
+continuing development under `autom8n/zerobrew`.
+
+The current direction is intentionally maintainer-led: the focus is on building
+a reliable, agent-friendly package manager workflow before expanding the
+project's public contribution surface again. Issues and pull requests are still
+welcome, but roadmap and merge decisions are made by the current maintainer.
 
 ## Quick start
 
@@ -82,10 +93,10 @@ doing so.
 ## Project status
 
 <div align="center">
-  <a href="https://star-history.com/#lucasgelfond/zerobrew&Date">
+  <a href="https://star-history.com/#autom8n/zerobrew&Date">
     <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=lucasgelfond/zerobrew&type=Date&theme=dark" />
-      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=lucasgelfond/zerobrew&type=Date" />
+      <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=autom8n/zerobrew&type=Date&theme=dark" />
+      <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=autom8n/zerobrew&type=Date" />
     </picture>
   </a>
 </div>

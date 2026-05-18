@@ -9,8 +9,9 @@ We strongly recommend keeping your zerobrew dependencies up to date.
 
 **Please do not report security vulnerabilities through public GitHub issues.**
 
-If you discover a security vulnerability in nmrs or any of the related crates, please report it privately by emailing
-**lucas.gelfondATgmail.com**.
+If you discover a security vulnerability in zerobrew or any of the related
+crates, please report it privately through GitHub Security Advisories for this
+repository.
 
 Please include the following information in your report:
 
@@ -77,7 +78,7 @@ We request that you:
 Published security advisories will be available through:
 
 - GitHub Security Advisories on the
-  [zerobrew repository](https://github.com/lucasgelfond/zerobrew/security/advisories)
+  [zerobrew repository](https://github.com/autom8n/zerobrew/security/advisories)
 - [RustSec Advisory Database](https://rustsec.org/)
 - Release notes and changelog entries
 

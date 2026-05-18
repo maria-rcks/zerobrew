@@ -2,6 +2,18 @@
 
 Thanks for your interest in contributing to zerobrew! This document provides guidelines for contributing to the project.
 
+## Project Direction
+
+This repository is an independent fork of the original
+[`lucasgelfond/zerobrew`](https://github.com/lucasgelfond/zerobrew) project.
+The current fork is maintained under `autom8n/zerobrew` and is intentionally
+maintainer-led while the project direction is being refined.
+
+External issues and pull requests are welcome, but roadmap and merge decisions
+are made by the current maintainer. If you are planning a substantial change,
+please open an issue first so the work can be aligned before you invest time in
+an implementation.
+
 ## Licensing
 
 By contributing to zerobrew, you agree your contributions will be dual-licensed under either [Apache](./LICENSE-APACHE.md) OR [MIT](./LICENSE-MIT.md), at the licensee's choice.
@@ -12,16 +24,14 @@ By contributing to zerobrew, you agree your contributions will be dual-licensed 
 - Access to either a macOS or Linux machine
 
 ## A note on LLM usage
-While we encourage the use of LLM's for thinking through problems, helping with tests, and even writing code, we simply 
-cannot accept or tolerate PRs with no clear guidance or thought put into them.
+LLMs and coding agents are welcome tools in this project. They are useful for
+research, tests, refactors, and implementation work. The important requirement
+is that every contribution has a human owner who understands the change and can
+explain the tradeoffs.
 
-**_Please understand_** that we reserve the right to simply close your PR if it exhibits clear indicators 
-of heavy LLM usage. We understand you are excited to contribute but the code must reach a level of quality
-that's typically achieved through thoughtful engagement in the community and the issues/agenda of zerobrew- NOT
-by throwing a prompt into an LLM and opening a PR with no direction.
-
-If you ever need help or want to walk through an issue or idea that you have with one of the maintainers, feel free to join 
-the [community discord](https://discord.gg/TVatsQBFJt); we would be more than happy to assist you.
+PRs may be closed if they look generated without review, lack tests for the
+behavior they change, or cannot be explained by the author. Using agents is not
+the issue; unowned changes are.
 
 ## Project Structure
 
@@ -35,9 +45,9 @@ Any changes you make that touch several crates should be organized properly. See
 
 ## General Development Workflow
 
-We prefer that a PR is linked to an open issue or previously discussed through other channels. 
-If you are introducing changes that aren't otherwise reported or tracking please either reach 
-out in the Discord to give us a heads up or open an issue first to discuss your changes.
+We prefer that a PR is linked to an open issue or previously discussed. If you
+are introducing changes that are not otherwise reported or tracked, please open
+an issue first to discuss your changes.
 
 **General flow:**
 1. Fork the repo
