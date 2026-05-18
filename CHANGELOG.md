@@ -5,20 +5,25 @@ All notable changes to zerobrew will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+Links to `lucasgelfond/zerobrew` in older entries refer to the original upstream
+project history before this fork.
+
 ## [Unreleased]
 ### Added
-- Chinese translation of the README ([#315](https://github.com/lucasgelfond/zerobrew/pull/316))
 - Regex matches on `/Cellar/<pkg>/)([^/]+)(/)`, so it only matches version segments within Cellar-style paths ([#317](https://github.com/lucasgelfond/zerobrew/pull/317))
-
-### Added
 - `zb doctor` command with `--repair` flag for state diagnosis and recovery ([#314](https://github.com/lucasgelfond/zerobrew/pull/314))
 
 ### Fixed
 - Validate root/prefix paths before passing to sudo to prevent shell injection ([#311](https://github.com/lucasgelfond/zerobrew/pull/311))
 
 ### Changed
+- Repository ownership, install documentation, and release automation now point
+  at `autom8n/zerobrew`.
 - Split monolithic install module into focused submodules ([#312](https://github.com/lucasgelfond/zerobrew/pull/312))
 - Split monolithic download module into focused submodules ([#313](https://github.com/lucasgelfond/zerobrew/pull/313))
+
+### Removed
+- Removed the generated website and Chinese README from this fork.
 
 
 ## [0.2.1] - 2026-03-14
@@ -90,8 +95,8 @@ To get an idea of the initial features zerobrew supports, take a look at the [RE
 
 See the [full commit history](https://github.com/lucasgelfond/zerobrew/commits/v0.1.1) for more details.
 
-[Unreleased]: https://github.com/lucasgelfond/zerobrew/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/lucasgelfond/zerobrew/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/lucasgelfond/zerobrew/compare/v0.1.2...v0.2.0
-[0.1.2]: https://github.com/lucasgelfond/zerobrew/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/lucasgelfond/zerobrew/releases/tag/v0.1.1
+[Unreleased]: https://github.com/autom8n/zerobrew/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/autom8n/zerobrew/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/autom8n/zerobrew/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/autom8n/zerobrew/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/autom8n/zerobrew/releases/tag/v0.1.1
