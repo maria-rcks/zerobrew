@@ -1,17 +1,17 @@
 use std::collections::BTreeMap;
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::progress::InstallProgress;
-use crate::storage::blob::BlobCache;
+use crate::storage::blob::{BlobCache, BlobWriter};
 use futures_util::StreamExt;
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT_RANGES, AUTHORIZATION, CONTENT_RANGE};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, Semaphore, mpsc};
+use tokio::sync::{Mutex, Semaphore};
 use zb_core::Error;
 
 use super::auth::{
@@ -52,6 +52,11 @@ struct ChunkRange {
     size: u64,
 }
 
+struct CompletedChunk {
+    offset: u64,
+    size: u64,
+}
+
 pub(crate) fn server_supports_ranges(response: &reqwest::Response) -> bool {
     response
         .headers()
@@ -88,7 +93,8 @@ fn calculate_chunk_ranges(file_size: u64) -> Vec<ChunkRange> {
 async fn download_chunk(
     ctx: &ChunkDownloadContext<'_>,
     chunk: &ChunkRange,
-) -> Result<Vec<u8>, Error> {
+    writer: &Arc<Mutex<BlobWriter>>,
+) -> Result<CompletedChunk, Error> {
     let range_header = format!("bytes={}-{}", chunk.offset, chunk.offset + chunk.size - 1);
 
     let mut last_error = None;
@@ -164,13 +170,33 @@ async fn download_chunk(
                     return Err(err);
                 }
 
-                let mut chunk_data = Vec::with_capacity(chunk.size as usize);
                 let mut stream = response.bytes_stream();
+                let mut written = 0u64;
 
                 while let Some(item) = stream.next().await {
                     let bytes = item.map_err(Error::network("failed to read chunk bytes"))?;
 
-                    chunk_data.extend_from_slice(&bytes);
+                    {
+                        let mut writer = writer.lock().await;
+                        writer
+                            .seek(std::io::SeekFrom::Start(chunk.offset + written))
+                            .map_err(|e| Error::NetworkFailure {
+                                message: format!(
+                                    "failed to seek to offset {}: {e}",
+                                    chunk.offset + written
+                                ),
+                            })?;
+                        writer
+                            .write_all(&bytes)
+                            .map_err(|e| Error::NetworkFailure {
+                                message: format!(
+                                    "failed to write chunk bytes at offset {}: {e}",
+                                    chunk.offset + written
+                                ),
+                            })?;
+                    }
+
+                    written += bytes.len() as u64;
 
                     if let (Some(cb), Some(n)) = (&ctx.progress, &ctx.name) {
                         let downloaded = ctx
@@ -184,17 +210,19 @@ async fn download_chunk(
                     }
                 }
 
-                if chunk_data.len() != chunk.size as usize {
+                if written != chunk.size {
                     return Err(Error::NetworkFailure {
                         message: format!(
                             "chunk size mismatch: expected {} bytes, got {} bytes",
-                            chunk.size,
-                            chunk_data.len()
+                            chunk.size, written
                         ),
                     });
                 }
 
-                return Ok(chunk_data);
+                return Ok(CompletedChunk {
+                    offset: chunk.offset,
+                    size: written,
+                });
             }
             Err(e) => {
                 last_error = Some(Error::network("chunk download failed")(e));
@@ -244,10 +272,7 @@ pub(crate) async fn download_with_chunks(
         .start_write(&expected_sha256)
         .map_err(Error::network("failed to create blob writer"))?;
 
-    let expected_chunks: BTreeMap<u64, u64> = chunks.iter().map(|c| (c.offset, c.size)).collect();
     let total_chunks = chunks.len();
-
-    let (chunk_tx, mut chunk_rx) = mpsc::unbounded_channel::<(Vec<u8>, u64)>();
 
     let total_downloaded = Arc::new(AtomicU64::new(0));
 
@@ -262,7 +287,6 @@ pub(crate) async fn download_with_chunks(
         let total_downloaded = total_downloaded.clone();
         let progress = ctx.progress.clone();
         let name = ctx.name.clone();
-        let chunk_tx = chunk_tx.clone();
         let file_size = ctx.file_size;
         let writer = writer.clone();
 
@@ -282,63 +306,37 @@ pub(crate) async fn download_with_chunks(
                 total_downloaded: total_downloaded.clone(),
             };
 
-            let chunk_data = download_chunk(&chunk_ctx, &chunk).await?;
-
-            {
-                let mut writer = writer.lock().await;
-                writer
-                    .seek(std::io::SeekFrom::Start(chunk.offset))
-                    .map_err(|e| Error::NetworkFailure {
-                        message: format!("failed to seek to offset {}: {e}", chunk.offset),
-                    })?;
-                writer
-                    .write_all(&chunk_data)
-                    .map_err(|e| Error::NetworkFailure {
-                        message: format!("failed to write chunk at offset {}: {e}", chunk.offset),
-                    })?;
-            }
-
-            chunk_tx
-                .send((chunk_data, chunk.offset))
-                .map_err(Error::network("failed to send chunk metadata"))?;
-
-            Ok::<(), Error>(())
+            download_chunk(&chunk_ctx, &chunk, &writer).await
         });
 
         handles.push(handle);
     }
 
-    drop(chunk_tx);
-
-    let mut received_chunks = BTreeMap::new();
+    let mut completed_chunks = BTreeMap::new();
     let mut chunks_written = 0u64;
-
-    while let Some((chunk_data, offset)) = chunk_rx.recv().await {
-        let expected_size = expected_chunks
-            .get(&offset)
-            .ok_or_else(|| Error::NetworkFailure {
-                message: format!("received unexpected chunk at offset {}", offset),
-            })?;
-
-        if chunk_data.len() != *expected_size as usize {
-            return Err(Error::NetworkFailure {
-                message: format!(
-                    "chunk size mismatch at offset {}: expected {} bytes, got {} bytes",
-                    offset,
-                    expected_size,
-                    chunk_data.len()
-                ),
-            });
-        }
-
-        received_chunks.insert(offset, chunk_data);
-        chunks_written += 1;
-    }
+    let mut first_error = None;
 
     for handle in handles {
-        handle
-            .await
-            .map_err(Error::network("chunk download task failed"))??;
+        match handle.await {
+            Ok(Ok(completed)) => {
+                completed_chunks.insert(completed.offset, completed.size);
+                chunks_written += 1;
+            }
+            Ok(Err(err)) => {
+                if first_error.is_none() {
+                    first_error = Some(err);
+                }
+            }
+            Err(err) => {
+                if first_error.is_none() {
+                    first_error = Some(Error::network("chunk download task failed")(err));
+                }
+            }
+        }
+    }
+
+    if let Some(err) = first_error {
+        return Err(err);
     }
 
     if chunks_written as usize != total_chunks {
@@ -350,9 +348,8 @@ pub(crate) async fn download_with_chunks(
         });
     }
 
-    let mut hasher = Sha256::new();
     let mut total_size = 0u64;
-    for (offset, chunk_data) in received_chunks {
+    for (offset, size) in completed_chunks {
         if offset != total_size {
             return Err(Error::NetworkFailure {
                 message: format!(
@@ -361,8 +358,7 @@ pub(crate) async fn download_with_chunks(
                 ),
             });
         }
-        hasher.update(&chunk_data);
-        total_size += chunk_data.len() as u64;
+        total_size += size;
     }
 
     if total_size != ctx.file_size {
@@ -371,15 +367,6 @@ pub(crate) async fn download_with_chunks(
                 "incomplete write: expected {} bytes, wrote {} bytes",
                 ctx.file_size, total_size
             ),
-        });
-    }
-
-    let actual_hash = format!("{:x}", hasher.finalize());
-
-    if actual_hash != expected_sha256 {
-        return Err(Error::ChecksumMismatch {
-            expected: expected_sha256,
-            actual: actual_hash,
         });
     }
 
@@ -392,6 +379,48 @@ pub(crate) async fn download_with_chunks(
     writer
         .flush()
         .map_err(Error::network("failed to flush download"))?;
+
+    let (writer, verified_size, actual_hash) =
+        tokio::task::spawn_blocking(move || -> Result<(BlobWriter, u64, String), Error> {
+            writer
+                .seek(std::io::SeekFrom::Start(0))
+                .map_err(Error::network("failed to rewind download"))?;
+
+            let mut hasher = Sha256::new();
+            let mut verified_size = 0u64;
+            let mut buffer = [0u8; 128 * 1024];
+
+            loop {
+                let read = writer
+                    .read(&mut buffer)
+                    .map_err(Error::network("failed to read download for checksum"))?;
+                if read == 0 {
+                    break;
+                }
+                hasher.update(&buffer[..read]);
+                verified_size += read as u64;
+            }
+
+            Ok((writer, verified_size, format!("{:x}", hasher.finalize())))
+        })
+        .await
+        .map_err(Error::network("failed to read download for checksum"))??;
+
+    if verified_size != ctx.file_size {
+        return Err(Error::NetworkFailure {
+            message: format!(
+                "incomplete verification read: expected {} bytes, read {} bytes",
+                ctx.file_size, verified_size
+            ),
+        });
+    }
+
+    if actual_hash != expected_sha256 {
+        return Err(Error::ChecksumMismatch {
+            expected: expected_sha256,
+            actual: actual_hash,
+        });
+    }
 
     if let (Some(cb), Some(n)) = (&ctx.progress, &ctx.name) {
         cb(InstallProgress::DownloadCompleted {

@@ -290,6 +290,7 @@ impl Downloader {
             let done = done.clone();
             let done_notify = done_notify.clone();
             let body_download_gate = body_download_gate.clone();
+            let global_semaphore = self.global_semaphore.clone();
 
             let delay = Duration::from_millis(idx as u64 * RACING_STAGGER_MS);
 
@@ -348,6 +349,15 @@ impl Downloader {
                     done_notify.notify_waiters();
                     return Ok(blob_cache.blob_path(&expected_sha256));
                 }
+
+                let _global_permit = match global_semaphore {
+                    Some(semaphore) => Some(semaphore.acquire_owned().await.map_err(|_| {
+                        Error::NetworkFailure {
+                            message: "global download permit closed unexpectedly".to_string(),
+                        }
+                    })?),
+                    None => None,
+                };
 
                 let result = download_response_internal(
                     &blob_cache,

@@ -21,7 +21,6 @@ type InflightMap = HashMap<String, Arc<tokio::sync::broadcast::Sender<Result<Pat
 
 pub struct ParallelDownloader {
     downloader: Arc<Downloader>,
-    semaphore: Arc<Semaphore>,
     inflight: Arc<Mutex<InflightMap>>,
 }
 
@@ -33,7 +32,6 @@ impl ParallelDownloader {
                 blob_cache,
                 Some(semaphore.clone()),
             )),
-            semaphore,
             inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -45,7 +43,6 @@ impl ParallelDownloader {
                 blob_cache,
                 Some(semaphore.clone()),
             )),
-            semaphore,
             inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -61,7 +58,6 @@ impl ParallelDownloader {
     ) -> Result<PathBuf, Error> {
         Self::download_with_dedup(
             self.downloader.clone(),
-            self.semaphore.clone(),
             self.inflight.clone(),
             request,
             progress,
@@ -85,12 +81,11 @@ impl ParallelDownloader {
             .into_iter()
             .map(|req| {
                 let downloader = self.downloader.clone();
-                let semaphore = self.semaphore.clone();
                 let inflight = self.inflight.clone();
                 let progress = progress.clone();
 
                 tokio::spawn(async move {
-                    Self::download_with_dedup(downloader, semaphore, inflight, req, progress).await
+                    Self::download_with_dedup(downloader, inflight, req, progress).await
                 })
             })
             .collect();
@@ -113,7 +108,6 @@ impl ParallelDownloader {
 
         for (index, req) in requests.into_iter().enumerate() {
             let downloader = self.downloader.clone();
-            let semaphore = self.semaphore.clone();
             let inflight = self.inflight.clone();
             let progress = progress.clone();
             let tx = tx.clone();
@@ -121,8 +115,7 @@ impl ParallelDownloader {
             let sha256 = req.sha256.clone();
 
             tokio::spawn(async move {
-                let result =
-                    Self::download_with_dedup(downloader, semaphore, inflight, req, progress).await;
+                let result = Self::download_with_dedup(downloader, inflight, req, progress).await;
                 let _ = tx
                     .send(result.map(|blob_path| DownloadResult {
                         name,
@@ -139,7 +132,6 @@ impl ParallelDownloader {
 
     async fn download_with_dedup(
         downloader: Arc<Downloader>,
-        semaphore: Arc<Semaphore>,
         inflight: Arc<Mutex<InflightMap>>,
         mut req: DownloadRequest,
         progress: Option<DownloadProgressCallback>,
@@ -166,11 +158,6 @@ impl ParallelDownloader {
 
             return result.map_err(|msg| Error::NetworkFailure { message: msg });
         }
-
-        let _permit = semaphore
-            .acquire()
-            .await
-            .map_err(Error::network("semaphore error"))?;
 
         let result = downloader
             .download_with_progress(&req.url, &req.sha256, Some(req.name), progress)
@@ -293,6 +280,106 @@ mod tests {
         assert_eq!(results.len(), 5);
         for path in &results {
             assert!(path.exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn chunked_downloads_do_not_exhaust_global_permits() {
+        let mock_server = MockServer::start().await;
+        let contents = Arc::new(vec![
+            vec![0xA0u8; 12 * 1024 * 1024],
+            vec![0xB0u8; 12 * 1024 * 1024],
+        ]);
+
+        let shas: Vec<_> = contents
+            .iter()
+            .map(|content| {
+                let mut hasher = Sha256::new();
+                hasher.update(content);
+                format!("{:x}", hasher.finalize())
+            })
+            .collect();
+
+        let head_contents = contents.clone();
+        Mock::given(method("HEAD"))
+            .respond_with(move |req: &wiremock::Request| {
+                let index = req
+                    .url
+                    .path()
+                    .strip_prefix("/large")
+                    .and_then(|path| path.strip_suffix(".tar.gz"))
+                    .and_then(|index| index.parse::<usize>().ok());
+
+                if let Some(index) = index
+                    && let Some(content) = head_contents.get(index)
+                {
+                    return ResponseTemplate::new(200)
+                        .append_header("Accept-Ranges", "bytes")
+                        .append_header("Content-Length", content.len().to_string());
+                }
+
+                ResponseTemplate::new(404)
+            })
+            .mount(&mock_server)
+            .await;
+
+        let get_contents = contents.clone();
+        Mock::given(method("GET"))
+            .respond_with(move |req: &wiremock::Request| {
+                let index = req
+                    .url
+                    .path()
+                    .strip_prefix("/large")
+                    .and_then(|path| path.strip_suffix(".tar.gz"))
+                    .and_then(|index| index.parse::<usize>().ok());
+
+                let Some(content) = index.and_then(|index| get_contents.get(index)) else {
+                    return ResponseTemplate::new(404);
+                };
+
+                if let Some(range_header) = req.headers.get("Range") {
+                    let range_str = range_header.to_str().unwrap();
+                    let range_part = range_str.strip_prefix("bytes=").unwrap();
+                    let (start_str, end_str) = range_part.split_once('-').unwrap();
+                    let start: usize = start_str.parse().unwrap();
+                    let end: usize = end_str.parse().unwrap();
+                    let chunk = &content[start..=end];
+
+                    return ResponseTemplate::new(206)
+                        .append_header("Content-Length", chunk.len().to_string())
+                        .append_header(
+                            "Content-Range",
+                            format!("bytes {}-{}/{}", start, end, content.len()),
+                        )
+                        .set_body_bytes(chunk.to_vec());
+                }
+
+                ResponseTemplate::new(200).set_body_bytes(content.clone())
+            })
+            .mount(&mock_server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let blob_cache = BlobCache::new(tmp.path()).unwrap();
+        let downloader = ParallelDownloader::with_concurrency(blob_cache, 2);
+
+        let requests: Vec<_> = (0..2)
+            .map(|index| DownloadRequest {
+                url: format!("{}/large{index}.tar.gz", mock_server.uri()),
+                sha256: shas[index].clone(),
+                name: format!("large{index}"),
+            })
+            .collect();
+
+        let result =
+            tokio::time::timeout(Duration::from_secs(5), downloader.download_all(requests))
+                .await
+                .expect("chunked downloads should not deadlock waiting for permits");
+        let paths = result.unwrap();
+
+        assert_eq!(paths.len(), contents.len());
+        for (path, expected) in paths.iter().zip(contents.iter()) {
+            assert_eq!(std::fs::read(path).unwrap(), *expected);
         }
     }
 }

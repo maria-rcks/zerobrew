@@ -1,5 +1,5 @@
 use std::fs;
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
 use tempfile::NamedTempFile;
@@ -79,6 +79,12 @@ impl Write for BlobWriter {
 
     fn flush(&mut self) -> io::Result<()> {
         self.temp_file.flush()
+    }
+}
+
+impl Read for BlobWriter {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        self.temp_file.read(buf)
     }
 }
 
