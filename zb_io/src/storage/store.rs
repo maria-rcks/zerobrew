@@ -7,6 +7,7 @@ use fs4::fs_std::FileExt;
 use crate::extraction::extract::extract_archive;
 use zb_core::Error;
 
+#[derive(Clone)]
 pub struct Store {
     store_dir: PathBuf,
     locks_dir: PathBuf,

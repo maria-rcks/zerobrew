@@ -43,7 +43,7 @@ pub struct Installer {
     locks_dir: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct PlannedInstall {
     pub install_name: String,
     pub formula: Formula,
@@ -266,26 +266,58 @@ impl Installer {
                 .downloader
                 .download_streaming(requests, download_progress.clone());
 
+            let mut prepare_handles = Vec::with_capacity(bottle_items.len());
             while let Some(result) = rx.recv().await {
                 match result {
                     Ok(download) => {
-                        match self
-                            .process_bottle_item(
-                                &bottle_items[download.index],
-                                &download,
-                                &download_progress,
-                                link,
-                                &report,
+                        let item = bottle_items[download.index].clone();
+                        let downloader = self.downloader.clone();
+                        let store = self.store.clone();
+                        let cellar = self.cellar.clone();
+                        let download_progress = download_progress.clone();
+                        let progress = progress.clone();
+
+                        prepare_handles.push(tokio::spawn(async move {
+                            Self::prepare_bottle_item_with_parts(
+                                downloader,
+                                store,
+                                cellar,
+                                item,
+                                download,
+                                download_progress,
+                                progress,
                             )
                             .await
-                        {
-                            Ok(()) => installed += 1,
-                            Err(e) => error = Some(e),
-                        }
+                        }));
                     }
                     Err(e) => {
                         error = Some(e);
                     }
+                }
+            }
+
+            let mut prepared_kegs = vec![None; bottle_items.len()];
+            for handle in prepare_handles {
+                match handle
+                    .await
+                    .map_err(Error::network("bottle prepare task failed"))?
+                {
+                    Ok(prepared) => {
+                        prepared_kegs[prepared.index] = Some(prepared.keg_path);
+                    }
+                    Err(e) => {
+                        error = Some(e);
+                    }
+                }
+            }
+
+            for (index, item) in bottle_items.iter().enumerate() {
+                let Some(keg_path) = prepared_kegs[index].as_ref() else {
+                    continue;
+                };
+                match self.finalize_bottle_item(item, keg_path, link, &report) {
+                    Ok(()) => installed += 1,
+                    Err(e) => error = Some(e),
                 }
             }
         }
@@ -677,6 +709,7 @@ mod tests {
                 tag
             )))
             .respond_with(ResponseTemplate::new(200).set_body_bytes(bottle.clone()))
+            .expect(1)
             .mount(&mock_server)
             .await;
 
@@ -707,6 +740,12 @@ mod tests {
             .install(&["testpkg".to_string()], true)
             .await
             .unwrap();
+
+        let second_install = installer
+            .install(&["testpkg".to_string()], true)
+            .await
+            .unwrap();
+        assert_eq!(second_install.installed, 0);
 
         assert!(root.join("cellar/testpkg/1.0.0").exists());
         assert!(prefix.join("bin/testpkg").exists());

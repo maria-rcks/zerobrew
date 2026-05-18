@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 #[cfg(target_os = "macos")]
 use std::process::Stdio;
+use std::sync::Arc;
 
 use tracing::warn;
 use zb_core::{Error, InstallMethod, formula_token};
@@ -10,8 +11,10 @@ use zb_core::{Error, InstallMethod, formula_token};
 use crate::cellar::link::{LinkedFile, Linker};
 use crate::cellar::materialize::Cellar;
 use crate::installer::cask::{CaskInstallerKind, resolve_cask};
-use crate::network::download::{DownloadProgressCallback, DownloadRequest, DownloadResult};
-use crate::progress::InstallProgress;
+use crate::network::download::{
+    DownloadProgressCallback, DownloadRequest, DownloadResult, ParallelDownloader,
+};
+use crate::progress::{InstallProgress, ProgressCallback};
 use crate::storage::store::Store;
 
 use super::{CaskInstallOptions, Installer, MAX_CORRUPTION_RETRIES, PlannedInstall};
@@ -22,12 +25,16 @@ const CASK_PKGS_DIR: &str = "Pkgs";
 const CASK_GENERIC_ARTIFACTS_DIR: &str = "Artifacts";
 const CASK_APP_IMAGES_DIR: &str = "AppImages";
 
+pub(super) struct PreparedBottle {
+    pub(super) index: usize,
+    pub(super) keg_path: PathBuf,
+}
+
 impl Installer {
-    pub(super) async fn process_bottle_item(
+    pub(super) fn finalize_bottle_item(
         &mut self,
         item: &PlannedInstall,
-        download: &DownloadResult,
-        download_progress: &Option<DownloadProgressCallback>,
+        keg_path: &Path,
         link: bool,
         report: &impl Fn(InstallProgress),
     ) -> Result<(), Error> {
@@ -39,23 +46,7 @@ impl Installer {
         let version = item.formula.effective_version();
         let store_key = &bottle.sha256;
 
-        report(InstallProgress::UnpackStarted {
-            name: formula_name.clone(),
-        });
-
-        let store_entry = self
-            .extract_with_retry(download, &item.formula, bottle, download_progress.clone())
-            .await?;
-
-        let keg_path = self
-            .cellar
-            .materialize(formula_name, &version, &store_entry)?;
-
-        report(InstallProgress::UnpackCompleted {
-            name: formula_name.clone(),
-        });
-
-        run_builtin_post_install(&self.prefix, install_name, &keg_path).inspect_err(|_| {
+        run_builtin_post_install(&self.prefix, install_name, keg_path).inspect_err(|_| {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
 
@@ -72,11 +63,11 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
 
-        if let Err(e) = self.linker.link_opt(&keg_path) {
+        if let Err(e) = self.linker.link_opt(keg_path) {
             warn!(formula = %install_name, error = %e, "failed to create opt link");
         }
         for alias in &item.formula.aliases {
-            if let Err(e) = self.linker.link_opt_alias(alias, &keg_path) {
+            if let Err(e) = self.linker.link_opt_alias(alias, keg_path) {
                 warn!(formula = %install_name, alias = %alias, error = %e, "failed to create opt alias link");
             }
         }
@@ -85,7 +76,7 @@ impl Installer {
             report(InstallProgress::LinkStarted {
                 name: formula_name.clone(),
             });
-            match self.linker.link_keg(&keg_path) {
+            match self.linker.link_keg(keg_path) {
                 Ok(linked_files) => {
                     report(InstallProgress::LinkCompleted {
                         name: formula_name.clone(),
@@ -93,7 +84,7 @@ impl Installer {
                     self.record_linked_files(install_name, &version, &linked_files);
                 }
                 Err(e) => {
-                    let _ = self.linker.unlink_keg(&keg_path);
+                    let _ = self.linker.unlink_keg(keg_path);
                     report(InstallProgress::InstallCompleted {
                         name: formula_name.clone(),
                     });
@@ -119,25 +110,51 @@ impl Installer {
         Ok(())
     }
 
-    async fn extract_with_retry(
-        &self,
-        download: &DownloadResult,
-        formula: &zb_core::Formula,
-        bottle: &zb_core::SelectedBottle,
-        progress: Option<DownloadProgressCallback>,
-    ) -> Result<std::path::PathBuf, Error> {
+    pub(super) async fn prepare_bottle_item_with_parts(
+        downloader: ParallelDownloader,
+        store: Store,
+        cellar: Cellar,
+        item: PlannedInstall,
+        download: DownloadResult,
+        download_progress: Option<DownloadProgressCallback>,
+        progress: Option<Arc<ProgressCallback>>,
+    ) -> Result<PreparedBottle, Error> {
+        let InstallMethod::Bottle(ref bottle) = item.method else {
+            unreachable!()
+        };
+        let formula_name = item.formula.name.clone();
+        let version = item.formula.effective_version();
+
+        if let Some(cb) = &progress {
+            cb(InstallProgress::UnpackStarted {
+                name: formula_name.clone(),
+            });
+        }
+
         let mut blob_path = download.blob_path.clone();
         let mut last_error = None;
+        let mut store_entry = None;
 
         for attempt in 0..MAX_CORRUPTION_RETRIES {
-            match self.store.ensure_entry(&bottle.sha256, &blob_path) {
-                Ok(entry) => return Ok(entry),
+            let store_for_extract = store.clone();
+            let sha256 = bottle.sha256.clone();
+            let blob_path_for_extract = blob_path.clone();
+            match tokio::task::spawn_blocking(move || {
+                store_for_extract.ensure_entry(&sha256, &blob_path_for_extract)
+            })
+            .await
+            .map_err(Error::network("store extraction task failed"))?
+            {
+                Ok(entry) => {
+                    store_entry = Some(entry);
+                    break;
+                }
                 Err(Error::StoreCorruption { message }) => {
-                    self.downloader.remove_blob(&bottle.sha256);
+                    downloader.remove_blob(&bottle.sha256);
 
                     if attempt + 1 < MAX_CORRUPTION_RETRIES {
                         warn!(
-                            formula = %formula.name,
+                            formula = %formula_name,
                             attempt = attempt + 2,
                             max_retries = MAX_CORRUPTION_RETRIES,
                             "corrupted download detected; retrying"
@@ -146,17 +163,14 @@ impl Installer {
                         let request = DownloadRequest {
                             url: bottle.url.clone(),
                             sha256: bottle.sha256.clone(),
-                            name: formula.name.clone(),
+                            name: formula_name.clone(),
                         };
 
-                        match self
-                            .downloader
-                            .download_single(request, progress.clone())
+                        match downloader
+                            .download_single(request, download_progress.clone())
                             .await
                         {
-                            Ok(new_path) => {
-                                blob_path = new_path;
-                            }
+                            Ok(new_path) => blob_path = new_path,
                             Err(e) => {
                                 last_error = Some(e);
                                 break;
@@ -177,9 +191,35 @@ impl Installer {
             }
         }
 
-        Err(last_error.unwrap_or_else(|| Error::StoreCorruption {
-            message: "extraction failed with unknown error".to_string(),
-        }))
+        let store_entry = store_entry.ok_or_else(|| {
+            last_error.unwrap_or_else(|| Error::StoreCorruption {
+                message: "extraction failed with unknown error".to_string(),
+            })
+        })?;
+
+        let cellar_for_materialize = cellar.clone();
+        let materialize_name = formula_name.clone();
+        let materialize_version = version.clone();
+        let keg_path = tokio::task::spawn_blocking(move || {
+            cellar_for_materialize.materialize(
+                &materialize_name,
+                &materialize_version,
+                &store_entry,
+            )
+        })
+        .await
+        .map_err(Error::network("cellar materialization task failed"))??;
+
+        if let Some(cb) = &progress {
+            cb(InstallProgress::UnpackCompleted {
+                name: formula_name.clone(),
+            });
+        }
+
+        Ok(PreparedBottle {
+            index: download.index,
+            keg_path,
+        })
     }
 
     fn record_linked_files(
