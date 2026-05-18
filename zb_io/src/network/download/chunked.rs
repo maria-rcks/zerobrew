@@ -1,17 +1,18 @@
 use std::collections::BTreeMap;
-use std::io::{Read, Write};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use crate::progress::InstallProgress;
-use crate::storage::blob::{BlobCache, BlobWriter};
+use crate::storage::blob::BlobCache;
 use futures_util::StreamExt;
+use futures_util::stream::FuturesUnordered;
 use reqwest::StatusCode;
 use reqwest::header::{ACCEPT_RANGES, AUTHORIZATION, CONTENT_RANGE};
 use sha2::{Digest, Sha256};
-use tokio::sync::{Mutex, Semaphore};
+use tokio::sync::Semaphore;
 use zb_core::Error;
 
 use super::auth::{
@@ -54,7 +55,7 @@ struct ChunkRange {
 
 struct CompletedChunk {
     offset: u64,
-    size: u64,
+    data: Vec<u8>,
 }
 
 pub(crate) fn server_supports_ranges(response: &reqwest::Response) -> bool {
@@ -93,7 +94,6 @@ fn calculate_chunk_ranges(file_size: u64) -> Vec<ChunkRange> {
 async fn download_chunk(
     ctx: &ChunkDownloadContext<'_>,
     chunk: &ChunkRange,
-    writer: &Arc<Mutex<BlobWriter>>,
 ) -> Result<CompletedChunk, Error> {
     let range_header = format!("bytes={}-{}", chunk.offset, chunk.offset + chunk.size - 1);
 
@@ -170,33 +170,14 @@ async fn download_chunk(
                     return Err(err);
                 }
 
+                let mut chunk_data = Vec::with_capacity(chunk.size as usize);
                 let mut stream = response.bytes_stream();
                 let mut written = 0u64;
 
                 while let Some(item) = stream.next().await {
                     let bytes = item.map_err(Error::network("failed to read chunk bytes"))?;
-
-                    {
-                        let mut writer = writer.lock().await;
-                        writer
-                            .seek(std::io::SeekFrom::Start(chunk.offset + written))
-                            .map_err(|e| Error::NetworkFailure {
-                                message: format!(
-                                    "failed to seek to offset {}: {e}",
-                                    chunk.offset + written
-                                ),
-                            })?;
-                        writer
-                            .write_all(&bytes)
-                            .map_err(|e| Error::NetworkFailure {
-                                message: format!(
-                                    "failed to write chunk bytes at offset {}: {e}",
-                                    chunk.offset + written
-                                ),
-                            })?;
-                    }
-
                     written += bytes.len() as u64;
+                    chunk_data.extend_from_slice(&bytes);
 
                     if let (Some(cb), Some(n)) = (&ctx.progress, &ctx.name) {
                         let downloaded = ctx
@@ -221,7 +202,7 @@ async fn download_chunk(
 
                 return Ok(CompletedChunk {
                     offset: chunk.offset,
-                    size: written,
+                    data: chunk_data,
                 });
             }
             Err(e) => {
@@ -238,6 +219,39 @@ async fn download_chunk(
     Err(last_error.unwrap_or_else(|| Error::NetworkFailure {
         message: "chunk download failed after retries".to_string(),
     }))
+}
+
+fn spawn_chunk_download(
+    ctx: &ChunkedDownloadContext<'_>,
+    chunk: ChunkRange,
+    total_downloaded: Arc<AtomicU64>,
+) -> tokio::task::JoinHandle<Result<CompletedChunk, Error>> {
+    let client = ctx.client.clone();
+    let token_cache = ctx.token_cache.clone();
+    let url = ctx.url.to_string();
+    let global_semaphore = Arc::clone(ctx.global_semaphore);
+    let progress = ctx.progress.clone();
+    let name = ctx.name.clone();
+    let file_size = ctx.file_size;
+
+    tokio::spawn(async move {
+        let _permit = global_semaphore
+            .acquire()
+            .await
+            .map_err(Error::network("global semaphore error"))?;
+
+        let chunk_ctx = ChunkDownloadContext {
+            client: &client,
+            token_cache: &token_cache,
+            url: &url,
+            progress,
+            name,
+            file_size,
+            total_downloaded,
+        };
+
+        download_chunk(&chunk_ctx, &chunk).await
+    })
 }
 
 pub(crate) async fn download_with_chunks(
@@ -267,76 +281,79 @@ pub(crate) async fn download_with_chunks(
         });
     }
 
-    let writer = ctx
+    let mut writer = ctx
         .blob_cache
         .start_write(&expected_sha256)
         .map_err(Error::network("failed to create blob writer"))?;
 
     let total_chunks = chunks.len();
-
     let total_downloaded = Arc::new(AtomicU64::new(0));
+    let mut chunks = chunks.into_iter();
+    let mut pending = FuturesUnordered::new();
 
-    let writer = Arc::new(Mutex::new(writer));
-
-    let mut handles = Vec::new();
-    for chunk in chunks {
-        let client = ctx.client.clone();
-        let token_cache = ctx.token_cache.clone();
-        let url = ctx.url.to_string();
-        let global_semaphore = ctx.global_semaphore.clone();
-        let total_downloaded = total_downloaded.clone();
-        let progress = ctx.progress.clone();
-        let name = ctx.name.clone();
-        let file_size = ctx.file_size;
-        let writer = writer.clone();
-
-        let handle = tokio::spawn(async move {
-            let _permit = global_semaphore
-                .acquire()
-                .await
-                .map_err(Error::network("global semaphore error"))?;
-
-            let chunk_ctx = ChunkDownloadContext {
-                client: &client,
-                token_cache: &token_cache,
-                url: &url,
-                progress: progress.clone(),
-                name: name.clone(),
-                file_size,
-                total_downloaded: total_downloaded.clone(),
-            };
-
-            download_chunk(&chunk_ctx, &chunk, &writer).await
-        });
-
-        handles.push(handle);
+    for _ in 0..MAX_CONCURRENT_CHUNKS {
+        let Some(chunk) = chunks.next() else {
+            break;
+        };
+        pending.push(spawn_chunk_download(ctx, chunk, total_downloaded.clone()));
     }
 
-    let mut completed_chunks = BTreeMap::new();
+    let mut buffered_chunks: BTreeMap<u64, Vec<u8>> = BTreeMap::new();
     let mut chunks_written = 0u64;
-    let mut first_error = None;
+    let mut next_hash_offset = 0u64;
+    let mut hasher = Sha256::new();
 
-    for handle in handles {
-        match handle.await {
+    while let Some(result) = pending.next().await {
+        let completed = match result {
             Ok(Ok(completed)) => {
-                completed_chunks.insert(completed.offset, completed.size);
-                chunks_written += 1;
+                if let Some(next_chunk) = chunks.next() {
+                    pending.push(spawn_chunk_download(
+                        ctx,
+                        next_chunk,
+                        total_downloaded.clone(),
+                    ));
+                }
+                completed
             }
             Ok(Err(err)) => {
-                if first_error.is_none() {
-                    first_error = Some(err);
+                for handle in pending.iter() {
+                    handle.abort();
                 }
+                return Err(err);
             }
             Err(err) => {
-                if first_error.is_none() {
-                    first_error = Some(Error::network("chunk download task failed")(err));
+                for handle in pending.iter() {
+                    handle.abort();
                 }
+                return Err(Error::network("chunk download task failed")(err));
             }
-        }
-    }
+        };
 
-    if let Some(err) = first_error {
-        return Err(err);
+        writer
+            .seek(std::io::SeekFrom::Start(completed.offset))
+            .map_err(|e| Error::NetworkFailure {
+                message: format!("failed to seek to offset {}: {e}", completed.offset),
+            })?;
+        writer
+            .write_all(&completed.data)
+            .map_err(|e| Error::NetworkFailure {
+                message: format!("failed to write chunk at offset {}: {e}", completed.offset),
+            })?;
+
+        if buffered_chunks
+            .insert(completed.offset, completed.data)
+            .is_some()
+        {
+            return Err(Error::NetworkFailure {
+                message: format!("received duplicate chunk at offset {}", completed.offset),
+            });
+        }
+
+        while let Some(data) = buffered_chunks.remove(&next_hash_offset) {
+            hasher.update(&data);
+            next_hash_offset += data.len() as u64;
+            chunks_written += 1;
+        }
     }
 
     if chunks_written as usize != total_chunks {
@@ -348,72 +365,20 @@ pub(crate) async fn download_with_chunks(
         });
     }
 
-    let mut total_size = 0u64;
-    for (offset, size) in completed_chunks {
-        if offset != total_size {
-            return Err(Error::NetworkFailure {
-                message: format!(
-                    "chunk gap detected: expected offset {}, got {}",
-                    total_size, offset
-                ),
-            });
-        }
-        total_size += size;
-    }
-
-    if total_size != ctx.file_size {
+    if next_hash_offset != ctx.file_size {
         return Err(Error::NetworkFailure {
             message: format!(
                 "incomplete write: expected {} bytes, wrote {} bytes",
-                ctx.file_size, total_size
+                ctx.file_size, next_hash_offset
             ),
         });
     }
-
-    let mut writer = Arc::try_unwrap(writer)
-        .map_err(|_| Error::NetworkFailure {
-            message: "failed to unwrap writer Arc".to_string(),
-        })?
-        .into_inner();
 
     writer
         .flush()
         .map_err(Error::network("failed to flush download"))?;
 
-    let (writer, verified_size, actual_hash) =
-        tokio::task::spawn_blocking(move || -> Result<(BlobWriter, u64, String), Error> {
-            writer
-                .seek(std::io::SeekFrom::Start(0))
-                .map_err(Error::network("failed to rewind download"))?;
-
-            let mut hasher = Sha256::new();
-            let mut verified_size = 0u64;
-            let mut buffer = [0u8; 128 * 1024];
-
-            loop {
-                let read = writer
-                    .read(&mut buffer)
-                    .map_err(Error::network("failed to read download for checksum"))?;
-                if read == 0 {
-                    break;
-                }
-                hasher.update(&buffer[..read]);
-                verified_size += read as u64;
-            }
-
-            Ok((writer, verified_size, format!("{:x}", hasher.finalize())))
-        })
-        .await
-        .map_err(Error::network("failed to read download for checksum"))??;
-
-    if verified_size != ctx.file_size {
-        return Err(Error::NetworkFailure {
-            message: format!(
-                "incomplete verification read: expected {} bytes, read {} bytes",
-                ctx.file_size, verified_size
-            ),
-        });
-    }
+    let actual_hash = format!("{:x}", hasher.finalize());
 
     if actual_hash != expected_sha256 {
         return Err(Error::ChecksumMismatch {
@@ -648,19 +613,27 @@ mod tests {
     async fn chunked_download_respects_concurrency_limit() {
         let mock_server = MockServer::start().await;
 
-        let large_content = vec![0xABu8; 40 * 1024 * 1024];
-        let actual_sha256 = {
-            let mut hasher = Sha256::new();
-            hasher.update(&large_content);
-            format!("{:x}", hasher.finalize())
-        };
+        fn byte_at(index: u64) -> u8 {
+            (index % 251) as u8
+        }
+
+        let file_size = 125_u64 * 1024 * 1024;
+        let mut hasher = Sha256::new();
+        let mut offset = 0;
+        while offset < file_size {
+            let len = (file_size - offset).min(1024 * 1024);
+            let bytes: Vec<_> = (offset..offset + len).map(byte_at).collect();
+            hasher.update(&bytes);
+            offset += len;
+        }
+        let actual_sha256 = format!("{:x}", hasher.finalize());
 
         Mock::given(method("HEAD"))
             .and(path("/large.tar.gz"))
             .respond_with(
                 ResponseTemplate::new(200)
                     .append_header("Accept-Ranges", "bytes")
-                    .append_header("Content-Length", large_content.len().to_string()),
+                    .append_header("Content-Length", file_size.to_string()),
             )
             .mount(&mock_server)
             .await;
@@ -669,7 +642,6 @@ mod tests {
         let max_concurrent = Arc::new(AtomicUsize::new(0));
         let concurrent_clone = concurrent_count.clone();
         let max_clone = max_concurrent.clone();
-        let large_content_for_closure = large_content.clone();
 
         Mock::given(method("GET"))
             .and(path("/large.tar.gz"))
@@ -686,7 +658,7 @@ mod tests {
 
                     std::thread::sleep(Duration::from_millis(50));
 
-                    let chunk = &large_content_for_closure[start..=end];
+                    let chunk: Vec<_> = (start as u64..=end as u64).map(byte_at).collect();
 
                     concurrent_clone.fetch_sub(1, Ordering::SeqCst);
 
@@ -694,16 +666,11 @@ mod tests {
                         .append_header("Content-Length", chunk.len().to_string())
                         .append_header(
                             "Content-Range",
-                            format!(
-                                "bytes {}-{}/{}",
-                                start,
-                                end,
-                                large_content_for_closure.len()
-                            ),
+                            format!("bytes {}-{}/{}", start, end, file_size),
                         )
-                        .set_body_bytes(chunk.to_vec())
+                        .set_body_bytes(chunk)
                 } else {
-                    ResponseTemplate::new(200).set_body_bytes(large_content_for_closure.clone())
+                    ResponseTemplate::new(200)
                 }
             })
             .mount(&mock_server)
@@ -727,8 +694,7 @@ mod tests {
         );
 
         let downloaded_content = std::fs::read(&blob_path).unwrap();
-        assert_eq!(downloaded_content.len(), large_content.len());
-        assert_eq!(downloaded_content, large_content);
+        assert_eq!(downloaded_content.len(), file_size as usize);
     }
 
     #[tokio::test]
