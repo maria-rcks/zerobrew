@@ -10,6 +10,28 @@ const HOMEBREW_PREFIXES: &[&str] = &[
     "/home/linuxbrew/.linuxbrew",
 ];
 
+fn is_macho_file(path: &Path) -> bool {
+    let mut magic = [0u8; 4];
+    let Ok(mut file) = fs::File::open(path) else {
+        return false;
+    };
+    if std::io::Read::read_exact(&mut file, &mut magic).is_err() {
+        return false;
+    }
+
+    matches!(
+        u32::from_be_bytes(magic),
+        0xfeedface | 0xfeedfacf | 0xcafebabe | 0xcefaedfe | 0xcffaedfe
+    )
+}
+
+fn bytes_contain(haystack: &[u8], needle: &[u8]) -> bool {
+    !needle.is_empty()
+        && haystack
+            .windows(needle.len())
+            .any(|window| window == needle)
+}
+
 /// Patch hardcoded Homebrew paths in text files.
 fn patch_text_file_strings(path: &Path, new_prefix: &str, new_cellar: &str) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
@@ -95,7 +117,11 @@ fn patch_text_file_strings(path: &Path, new_prefix: &str, new_cellar: &str) -> R
 
 /// Patch hardcoded Homebrew paths in Mach-O binary data sections.
 /// This handles paths like /opt/homebrew/opt/git/libexec/git-core that are baked into binaries.
-fn patch_macho_binary_strings(path: &Path, new_prefix: &str) -> Result<(), Error> {
+fn patch_macho_binary_strings(
+    path: &Path,
+    new_prefix: &str,
+    pkg_name: &str,
+) -> Result<bool, Error> {
     use std::io::{Read as _, Write as _};
     use std::os::unix::fs::PermissionsExt;
 
@@ -117,6 +143,12 @@ fn patch_macho_binary_strings(path: &Path, new_prefix: &str) -> Result<(), Error
 
     let original_contents = contents.clone();
     let mut patched = false;
+    let cellar_fragment = format!("/Cellar/{pkg_name}/");
+    let may_need_install_name_tool = bytes_contain(&contents, b"@@HOMEBREW_")
+        || bytes_contain(&contents, cellar_fragment.as_bytes())
+        || HOMEBREW_PREFIXES.iter().any(|old_prefix| {
+            *old_prefix != new_prefix && bytes_contain(&contents, old_prefix.as_bytes())
+        });
 
     for old_prefix in HOMEBREW_PREFIXES {
         if old_prefix == &new_prefix {
@@ -196,7 +228,7 @@ fn patch_macho_binary_strings(path: &Path, new_prefix: &str) -> Result<(), Error
         let _ = fs::set_permissions(path, perms);
     }
 
-    Ok(())
+    Ok(may_need_install_name_tool)
 }
 
 /// Patch @@HOMEBREW_CELLAR@@ and @@HOMEBREW_PREFIX@@ placeholders in Mach-O binaries.
@@ -234,32 +266,32 @@ pub fn patch_homebrew_placeholders(
             // Skip symlinks - only process actual files
             e.file_type().is_file()
         })
-        .filter(|e| {
-            if let Ok(data) = fs::read(e.path())
-                && data.len() >= 4
-            {
-                let magic = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-                return matches!(
-                    magic,
-                    0xfeedface | 0xfeedfacf | 0xcafebabe | 0xcefaedfe | 0xcffaedfe
-                );
-            }
-            false
-        })
+        .filter(|e| is_macho_file(e.path()))
         .map(|e| e.path().to_path_buf())
         .collect();
 
     let patch_failures = AtomicUsize::new(0);
     let first_patch_error: Arc<Mutex<Option<Error>>> = Arc::new(Mutex::new(None));
 
-    // First pass: patch binary strings in Mach-O files
+    let install_name_candidates: Arc<Mutex<Vec<PathBuf>>> = Arc::new(Mutex::new(Vec::new()));
+
+    // First pass: patch binary strings in Mach-O files and remember which
+    // files contain paths worth inspecting with otool/install_name_tool.
     macho_files.par_iter().for_each(|path| {
-        if let Err(e) = patch_macho_binary_strings(path, &prefix_str) {
-            patch_failures.fetch_add(1, Ordering::Relaxed);
-            if let Ok(mut guard) = first_patch_error.lock()
-                && guard.is_none()
-            {
-                *guard = Some(e);
+        match patch_macho_binary_strings(path, &prefix_str, pkg_name) {
+            Ok(true) => {
+                if let Ok(mut candidates) = install_name_candidates.lock() {
+                    candidates.push(path.clone());
+                }
+            }
+            Ok(false) => {}
+            Err(e) => {
+                patch_failures.fetch_add(1, Ordering::Relaxed);
+                if let Ok(mut guard) = first_patch_error.lock()
+                    && guard.is_none()
+                {
+                    *guard = Some(e);
+                }
             }
         }
     });
@@ -322,8 +354,13 @@ pub fn patch_homebrew_placeholders(
         }
     };
 
+    let install_name_candidates = install_name_candidates
+        .lock()
+        .map(|candidates| candidates.clone())
+        .unwrap_or_default();
+
     // Third pass: Process Mach-O files for install_name_tool patching
-    macho_files.par_iter().for_each(|path| {
+    install_name_candidates.par_iter().for_each(|path| {
         // Get file permissions and make writable if needed
         let metadata = match fs::metadata(path) {
             Ok(m) => m,
@@ -456,17 +493,7 @@ pub fn codesign_and_strip_xattrs(keg_path: &Path) -> Result<(), Error> {
 
     // Only process files that need signing
     bin_files.par_iter().for_each(|path| {
-        // Quick check: is it a Mach-O?
-        let data = match fs::read(path) {
-            Ok(d) if d.len() >= 4 => d,
-            _ => return,
-        };
-        let magic = u32::from_be_bytes([data[0], data[1], data[2], data[3]]);
-        let is_macho = matches!(
-            magic,
-            0xfeedface | 0xfeedfacf | 0xcafebabe | 0xcefaedfe | 0xcffaedfe
-        );
-        if !is_macho {
+        if !is_macho_file(path) {
             return;
         }
 
@@ -538,7 +565,7 @@ mod tests {
         perms.set_mode(0o755);
         fs::set_permissions(&test_file, perms).unwrap();
 
-        patch_macho_binary_strings(&test_file, new_prefix).unwrap();
+        patch_macho_binary_strings(&test_file, new_prefix, "hello").unwrap();
 
         let mode = fs::metadata(&test_file).unwrap().permissions().mode();
         assert!(
@@ -568,7 +595,7 @@ mod tests {
 
         fs::write(&test_file, &contents).unwrap();
 
-        let result = patch_macho_binary_strings(&test_file, new_prefix);
+        let result = patch_macho_binary_strings(&test_file, new_prefix, "hello");
         assert!(result.is_ok());
 
         let patched = fs::read(&test_file).unwrap();
@@ -599,7 +626,7 @@ mod tests {
         // Should succeed (skip) rather than error when the new prefix is
         // longer than the old one — install_name_tool handles load command
         // changes regardless of length.
-        let result = patch_macho_binary_strings(&test_file, new_prefix);
+        let result = patch_macho_binary_strings(&test_file, new_prefix, "hello");
         assert!(
             result.is_ok(),
             "should skip when new prefix is longer than old prefix"

@@ -7,7 +7,7 @@ use zb_core::Error;
 use crate::extraction::patch::linux::patch_placeholders;
 
 #[cfg(target_os = "macos")]
-use crate::extraction::patch::macos::{codesign_and_strip_xattrs, patch_homebrew_placeholders};
+use crate::extraction::patch::macos::patch_homebrew_placeholders;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CopyStrategy {
@@ -16,6 +16,7 @@ pub enum CopyStrategy {
     Copy,
 }
 
+#[derive(Clone)]
 pub struct Cellar {
     cellar_dir: PathBuf,
 }
@@ -135,10 +136,6 @@ impl Cellar {
             patch_placeholders(&keg_path, prefix, name, version)?;
         }
 
-        // Strip quarantine xattrs and ad-hoc sign Mach-O binaries
-        #[cfg(target_os = "macos")]
-        codesign_and_strip_xattrs(&keg_path)?;
-
         Ok(keg_path)
     }
 
@@ -206,26 +203,20 @@ fn copy_dir_with_fallback(src: &Path, dst: &Path) -> Result<(), Error> {
 
 #[cfg(target_os = "macos")]
 fn try_clonefile_dir(src: &Path, dst: &Path) -> io::Result<()> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
+    fs::create_dir_all(dst)?;
 
-    let src_cstr = CString::new(src.as_os_str().as_bytes())?;
-    let dst_cstr = CString::new(dst.as_os_str().as_bytes())?;
+    let source_contents = src.join(".");
+    let status = std::process::Command::new("/bin/cp")
+        .arg("-cR")
+        .arg(&source_contents)
+        .arg(dst)
+        .status()?;
 
-    // clonefile flags: CLONE_NOFOLLOW to not follow symlinks
-    const CLONE_NOFOLLOW: u32 = 0x0001;
-
-    unsafe extern "C" {
-        fn clonefile(src: *const libc::c_char, dst: *const libc::c_char, flags: u32)
-        -> libc::c_int;
-    }
-
-    let result = unsafe { clonefile(src_cstr.as_ptr(), dst_cstr.as_ptr(), CLONE_NOFOLLOW) };
-
-    if result == 0 {
+    if status.success() {
         Ok(())
     } else {
-        Err(io::Error::last_os_error())
+        let _ = fs::remove_dir_all(dst);
+        Err(io::Error::other("copy-on-write directory clone failed"))
     }
 }
 
