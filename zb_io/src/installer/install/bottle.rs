@@ -1,11 +1,13 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+#[cfg(target_os = "macos")]
+use std::process::Stdio;
 
 use tracing::warn;
 use zb_core::{Error, InstallMethod, formula_token};
 
-use crate::cellar::link::Linker;
+use crate::cellar::link::{LinkedFile, Linker};
 use crate::cellar::materialize::Cellar;
 use crate::installer::cask::{CaskInstallerKind, resolve_cask};
 use crate::network::download::{DownloadProgressCallback, DownloadRequest, DownloadResult};
@@ -214,6 +216,7 @@ impl Installer {
         name: &str,
         version: &str,
         keg_path: &Path,
+        appimage_dir: &Path,
         unlink: bool,
     ) {
         if unlink && let Err(e) = linker.unlink_keg(keg_path) {
@@ -242,15 +245,22 @@ impl Installer {
             );
         }
 
-        if unlink && let Err(e) = uninstall_cask_fonts(keg_path) {
+        if unlink && let Err(e) = uninstall_cask_generic_artifacts(keg_path) {
             warn!(
                 formula = %name,
                 version = %version,
                 error = %e,
-                "failed to remove installed fonts after install error"
+                "failed to remove installed generic artifacts after install error"
             );
         }
-
+        if unlink && let Err(e) = uninstall_cask_app_images(keg_path, appimage_dir) {
+            warn!(
+                formula = %name,
+                version = %version,
+                error = %e,
+                "failed to remove installed appimages after install error"
+            );
+        }
         if let Err(e) = cellar.remove_keg(name, version) {
             warn!(
                 formula = %name,
@@ -296,6 +306,12 @@ impl Installer {
         if !options.binaries {
             cask.binaries.clear();
         }
+        let progress = options.progress.clone();
+        let report = |event: InstallProgress| {
+            if let Some(ref cb) = progress {
+                cb(event);
+            }
+        };
 
         let blob_path = self
             .downloader
@@ -305,7 +321,7 @@ impl Installer {
                     sha256: cask.sha256.clone(),
                     name: cask.install_name.clone(),
                 },
-                None,
+                progress.clone(),
             )
             .await?;
 
@@ -316,8 +332,13 @@ impl Installer {
             &cask.install_name,
             &cask.version,
             &keg_path,
+            &self.appimage_dir,
             options.link,
         );
+
+        report(InstallProgress::UnpackStarted {
+            name: cask.install_name.clone(),
+        });
 
         if crate::extraction::is_archive(&blob_path)? {
             let extracted = self.store.ensure_entry(&cask.sha256, &blob_path)?;
@@ -343,16 +364,30 @@ impl Installer {
             copy_path_recursive(&stored, &keg_path)?;
         }
 
+        report(InstallProgress::UnpackCompleted {
+            name: cask.install_name.clone(),
+        });
+
         let linked_files = if options.link {
-            let linked_files = self.linker.link_keg(&keg_path)?;
+            report(InstallProgress::LinkStarted {
+                name: cask.install_name.clone(),
+            });
+            let linked_files = link_keg_with_force(&self.linker, &keg_path, options.force)?;
             link_cask_apps(&keg_path, self.app_dir(), &cask, options.force)?;
             link_cask_fonts(&keg_path, self.font_dir(), &cask, options.force)?;
             link_cask_generic_artifacts(&keg_path, self.prefix(), &cask, options.force)?;
             link_cask_app_images(&keg_path, self.appimage_dir(), &cask, options.force)?;
             run_cask_pkgs(&keg_path, &cask)?;
             run_cask_installers(&keg_path, self.prefix(), &cask)?;
+            report(InstallProgress::LinkCompleted {
+                name: cask.install_name.clone(),
+            });
             linked_files
         } else {
+            report(InstallProgress::LinkSkipped {
+                name: cask.install_name.clone(),
+                reason: "--no-link".to_string(),
+            });
             Vec::new()
         };
 
@@ -369,6 +404,9 @@ impl Installer {
         tx.commit()?;
 
         cleanup.disarm();
+        report(InstallProgress::InstallCompleted {
+            name: cask.install_name.clone(),
+        });
         Ok(())
     }
 
@@ -421,12 +459,36 @@ pub(super) fn dependency_cellar_path(
         .to_string()
 }
 
+fn link_keg_with_force(
+    linker: &Linker,
+    keg_path: &Path,
+    force: bool,
+) -> Result<Vec<LinkedFile>, Error> {
+    match linker.link_keg(keg_path) {
+        Ok(linked_files) => Ok(linked_files),
+        Err(Error::LinkConflict { conflicts }) if force => {
+            for conflict in conflicts {
+                match remove_path_any(&conflict.path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        return Err(Error::store("failed to replace existing linked file")(e));
+                    }
+                }
+            }
+            linker.link_keg(keg_path)
+        }
+        Err(e) => Err(e),
+    }
+}
+
 struct FailedInstallGuard<'a> {
     linker: &'a Linker,
     cellar: &'a Cellar,
     name: &'a str,
     version: &'a str,
     keg_path: &'a Path,
+    appimage_dir: &'a Path,
     unlink: bool,
     armed: bool,
 }
@@ -438,6 +500,7 @@ impl<'a> FailedInstallGuard<'a> {
         name: &'a str,
         version: &'a str,
         keg_path: &'a Path,
+        appimage_dir: &'a Path,
         unlink: bool,
     ) -> Self {
         Self {
@@ -446,6 +509,7 @@ impl<'a> FailedInstallGuard<'a> {
             name,
             version,
             keg_path,
+            appimage_dir,
             unlink,
             armed: true,
         }
@@ -465,6 +529,7 @@ impl Drop for FailedInstallGuard<'_> {
                 self.name,
                 self.version,
                 self.keg_path,
+                self.appimage_dir,
                 self.unlink,
             );
         }
@@ -882,6 +947,8 @@ impl Drop for DmgMount {
             let _ = Command::new("hdiutil")
                 .args(["detach", "-force"])
                 .arg(mount_point)
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
                 .status();
         }
     }
@@ -2439,12 +2506,39 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_failed_install_removes_moved_cask_apps_and_fonts() {
+    fn force_link_keg_replaces_existing_conflicts() {
         let tmp = TempDir::new().unwrap();
         let prefix = tmp.path().join("prefix");
         let linker = Linker::new(&prefix).unwrap();
         let cellar = Cellar::new(&prefix).unwrap();
         let keg_path = cellar.keg_path("cask:test", "1.0.0");
+
+        let staged_binary = keg_path.join("bin/test-tool");
+        fs::create_dir_all(staged_binary.parent().unwrap()).unwrap();
+        fs::write(&staged_binary, b"#!/bin/sh\necho staged\n").unwrap();
+
+        let conflict = prefix.join("bin/test-tool");
+        fs::write(&conflict, b"existing").unwrap();
+
+        let result = link_keg_with_force(&linker, &keg_path, false);
+        assert!(matches!(result, Err(Error::LinkConflict { .. })));
+        assert_eq!(fs::read_to_string(&conflict).unwrap(), "existing");
+
+        let linked_files = link_keg_with_force(&linker, &keg_path, true).unwrap();
+
+        assert_eq!(linked_files.len(), 1);
+        assert!(conflict.is_symlink());
+        assert_eq!(fs::read_link(&conflict).unwrap(), staged_binary);
+    }
+
+    #[test]
+    fn cleanup_failed_install_removes_moved_cask_apps_fonts_and_appimages() {
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("prefix");
+        let linker = Linker::new(&prefix).unwrap();
+        let cellar = Cellar::new(&prefix).unwrap();
+        let keg_path = cellar.keg_path("cask:test", "1.0.0");
+        let appimage_dir = tmp.path().join("AppImages");
 
         let app_target = tmp.path().join("Applications/Test.app");
         fs::create_dir_all(app_target.join("Contents")).unwrap();
@@ -2462,10 +2556,27 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(&font_target, &staged_font).unwrap();
 
-        Installer::cleanup_failed_install(&linker, &cellar, "cask:test", "1.0.0", &keg_path, true);
+        fs::create_dir_all(&appimage_dir).unwrap();
+        let staged_appimage = keg_path.join("AppImages/Test.AppImage");
+        fs::create_dir_all(staged_appimage.parent().unwrap()).unwrap();
+        fs::write(&staged_appimage, b"appimage").unwrap();
+        let appimage_target = appimage_dir.join("Test.AppImage");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&staged_appimage, &appimage_target).unwrap();
+
+        Installer::cleanup_failed_install(
+            &linker,
+            &cellar,
+            "cask:test",
+            "1.0.0",
+            &keg_path,
+            &appimage_dir,
+            true,
+        );
 
         assert!(!app_target.exists());
         assert!(!font_target.exists());
+        assert!(appimage_target.symlink_metadata().is_err());
         assert!(!keg_path.exists());
     }
 }

@@ -59,7 +59,7 @@ pub struct ExecuteResult {
     pub installed: usize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct CaskInstallOptions {
     pub link: bool,
     pub binaries: bool,
@@ -67,7 +67,23 @@ pub struct CaskInstallOptions {
     pub app_dir: Option<PathBuf>,
     pub font_dir: Option<PathBuf>,
     pub appimage_dir: Option<PathBuf>,
+    pub progress: Option<DownloadProgressCallback>,
     pub(crate) dependency_stack: Vec<String>,
+}
+
+impl std::fmt::Debug for CaskInstallOptions {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CaskInstallOptions")
+            .field("link", &self.link)
+            .field("binaries", &self.binaries)
+            .field("force", &self.force)
+            .field("app_dir", &self.app_dir)
+            .field("font_dir", &self.font_dir)
+            .field("appimage_dir", &self.appimage_dir)
+            .field("progress", &self.progress.as_ref().map(|_| "<callback>"))
+            .field("dependency_stack", &self.dependency_stack)
+            .finish()
+    }
 }
 
 impl CaskInstallOptions {
@@ -79,6 +95,7 @@ impl CaskInstallOptions {
             app_dir: None,
             font_dir: None,
             appimage_dir: None,
+            progress: None,
             dependency_stack: Vec::new(),
         }
     }
