@@ -887,6 +887,7 @@ impl Drop for DmgMount {
     }
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn parse_hdiutil_mount_points(plist: &str) -> Vec<PathBuf> {
     let mut mount_points = Vec::new();
     let mut rest = plist;
@@ -907,6 +908,7 @@ fn parse_hdiutil_mount_points(plist: &str) -> Vec<PathBuf> {
     mount_points
 }
 
+#[cfg(any(target_os = "macos", test))]
 fn xml_unescape(input: &str) -> String {
     input
         .replace("&amp;", "&")
@@ -1546,9 +1548,10 @@ fn run_cask_pkgs(
 
     #[cfg(not(target_os = "macos"))]
     {
-        return Err(Error::InvalidArgument {
+        let _ = keg_path;
+        Err(Error::InvalidArgument {
             message: format!("pkg cask '{}' can only be installed on macOS", cask.token),
-        });
+        })
     }
 
     #[cfg(target_os = "macos")]

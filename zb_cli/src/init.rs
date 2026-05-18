@@ -220,6 +220,17 @@ fn upsert_managed_block(existing: &str, managed_block: &str) -> String {
     }
 }
 
+enum ShellConfigKind {
+    Posix,
+    Fish,
+}
+
+struct ShellEnv<'a> {
+    home: &'a str,
+    shell: &'a str,
+    zdotdir: Option<&'a str>,
+}
+
 fn add_to_path(
     prefix: &Path,
     zerobrew_dir: &str,
@@ -228,19 +239,39 @@ fn add_to_path(
     no_modify_path: bool,
     ui: &mut StdUi,
 ) -> Result<(), InitError> {
-    enum ShellConfigKind {
-        Posix,
-        Fish,
-    }
-
     let shell = std::env::var("SHELL").unwrap_or_default();
     let home = std::env::var("HOME").map_err(|_| InitError::Message("HOME not set".to_string()))?;
+    let zdotdir = std::env::var("ZDOTDIR").ok();
 
-    let (config_file, shell_kind) = if shell.contains("zsh") {
-        let zdotdir = std::env::var("ZDOTDIR").unwrap_or_else(|_| home.clone());
+    add_to_path_with_env(
+        prefix,
+        zerobrew_dir,
+        zerobrew_bin,
+        root,
+        no_modify_path,
+        ShellEnv {
+            home: &home,
+            shell: &shell,
+            zdotdir: zdotdir.as_deref(),
+        },
+        ui,
+    )
+}
+
+fn add_to_path_with_env(
+    prefix: &Path,
+    zerobrew_dir: &str,
+    zerobrew_bin: &str,
+    root: &Path,
+    no_modify_path: bool,
+    shell_env: ShellEnv<'_>,
+    ui: &mut StdUi,
+) -> Result<(), InitError> {
+    let (config_file, shell_kind) = if shell_env.shell.contains("zsh") {
+        let zdotdir = shell_env.zdotdir.unwrap_or(shell_env.home);
         let zshenv = format!("{}/.zshenv", zdotdir);
         let zshrc = format!("{}/.zshrc", zdotdir);
-        let home_zshrc = format!("{}/.zshrc", home);
+        let home_zshrc = format!("{}/.zshrc", shell_env.home);
 
         if std::path::Path::new(&zshenv).exists() {
             (zshenv, ShellConfigKind::Posix)
@@ -249,20 +280,26 @@ fn add_to_path(
         } else {
             (home_zshrc, ShellConfigKind::Posix)
         }
-    } else if shell.contains("bash") {
-        let bash_profile = format!("{}/.bash_profile", home);
+    } else if shell_env.shell.contains("bash") {
+        let bash_profile = format!("{}/.bash_profile", shell_env.home);
         if std::path::Path::new(&bash_profile).exists() {
             (bash_profile, ShellConfigKind::Posix)
         } else {
-            (format!("{}/.bashrc", home), ShellConfigKind::Posix)
+            (
+                format!("{}/.bashrc", shell_env.home),
+                ShellConfigKind::Posix,
+            )
         }
-    } else if shell.contains("fish") {
+    } else if shell_env.shell.contains("fish") {
         (
-            format!("{}/.config/fish/conf.d/zerobrew.fish", home),
+            format!("{}/.config/fish/conf.d/zerobrew.fish", shell_env.home),
             ShellConfigKind::Fish,
         )
     } else {
-        (format!("{}/.profile", home), ShellConfigKind::Posix)
+        (
+            format!("{}/.profile", shell_env.home),
+            ShellConfigKind::Posix,
+        )
     };
 
     let prefix_bin = prefix.join("bin");
@@ -490,24 +527,45 @@ mod tests {
         root: &Path,
         no_modify_path: bool,
     ) -> Result<(), InitError> {
-        let mut ui = Ui::new();
-        super::add_to_path(
+        add_to_path_for_shell(
             prefix,
             zerobrew_dir,
             zerobrew_bin,
             root,
             no_modify_path,
+            "/bin/bash",
+            None,
+        )
+    }
+
+    fn add_to_path_for_shell(
+        prefix: &Path,
+        zerobrew_dir: &str,
+        zerobrew_bin: &str,
+        root: &Path,
+        no_modify_path: bool,
+        shell: &str,
+        zdotdir: Option<&Path>,
+    ) -> Result<(), InitError> {
+        let mut ui = Ui::new();
+        let home = prefix.parent().unwrap().to_str().unwrap();
+        let zdotdir = zdotdir.map(|path| path.to_str().unwrap());
+        super::add_to_path_with_env(
+            prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            root,
+            no_modify_path,
+            ShellEnv {
+                home,
+                shell,
+                zdotdir,
+            },
             &mut ui,
         )
     }
     use std::os::unix::fs::PermissionsExt;
-    use std::sync::{Mutex, OnceLock};
     use tempfile::TempDir;
-
-    static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
-        ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
-    }
 
     #[test]
     fn needs_init_when_directories_missing() {
@@ -587,7 +645,6 @@ mod tests {
 
     #[test]
     fn add_to_path_writes_core_env_vars_with_guarded_ca_setup() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -598,14 +655,6 @@ mod tests {
 
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
-
-        // Set up environment to simulate bash
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/bash");
-        }
 
         add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
 
@@ -633,7 +682,6 @@ mod tests {
 
     #[test]
     fn add_to_path_includes_path_append_function() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -644,13 +692,6 @@ mod tests {
 
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
-
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/bash");
-        }
 
         add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
 
@@ -662,7 +703,6 @@ mod tests {
 
     #[test]
     fn add_to_path_adds_both_paths() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -673,13 +713,6 @@ mod tests {
 
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
-
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/bash");
-        }
 
         add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
 
@@ -690,7 +723,6 @@ mod tests {
 
     #[test]
     fn add_to_path_no_modify_shell_skips_write() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -701,13 +733,6 @@ mod tests {
 
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
-
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/bash");
-        }
 
         add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, true).unwrap();
 
@@ -717,7 +742,6 @@ mod tests {
 
     #[test]
     fn add_to_path_no_duplicate_config() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -728,13 +752,6 @@ mod tests {
 
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
-
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/bash");
-        }
 
         // Write initial config with existing managed block and unrelated user content
         fs::write(
@@ -758,7 +775,6 @@ mod tests {
 
     #[test]
     fn add_to_path_uses_zshrc_for_zsh() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -770,13 +786,16 @@ mod tests {
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-            std::env::set_var("SHELL", "/bin/zsh");
-            std::env::remove_var("ZDOTDIR");
-        }
-
-        add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
+        add_to_path_for_shell(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            false,
+            "/bin/zsh",
+            None,
+        )
+        .unwrap();
 
         assert!(shell_config.exists());
         let content = fs::read_to_string(&shell_config).unwrap();
@@ -785,7 +804,6 @@ mod tests {
 
     #[test]
     fn add_to_path_prefers_zshenv_when_exists() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -801,17 +819,16 @@ mod tests {
         // Create .zshenv first
         fs::write(&zshenv, "# existing zshenv\n").unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/zsh");
-        }
-        unsafe {
-            std::env::remove_var("ZDOTDIR");
-        }
-
-        add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
+        add_to_path_for_shell(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            false,
+            "/bin/zsh",
+            None,
+        )
+        .unwrap();
 
         // Should write to .zshenv, not .zshrc
         assert!(zshenv.exists());
@@ -822,7 +839,6 @@ mod tests {
 
     #[test]
     fn add_to_path_prefers_bash_profile_when_exists() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -838,13 +854,6 @@ mod tests {
         // Create .bash_profile first
         fs::write(&bash_profile, "# existing bash_profile\n").unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/bash");
-        }
-
         add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
 
         assert!(bash_profile.exists());
@@ -855,7 +864,6 @@ mod tests {
 
     #[test]
     fn add_to_path_uses_profile_for_other_shells() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -867,14 +875,16 @@ mod tests {
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/sh");
-        }
-
-        add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
+        add_to_path_for_shell(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            false,
+            "/bin/sh",
+            None,
+        )
+        .unwrap();
 
         assert!(profile.exists());
         let content = fs::read_to_string(&profile).unwrap();
@@ -883,9 +893,7 @@ mod tests {
 
     #[test]
     fn add_to_path_uses_zdotdir_when_set() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
-        let home = tmp.path();
         let zdotdir = tmp.path().join("zsh_config");
         let prefix = tmp.path().join("prefix");
         let root = tmp.path().join("root");
@@ -898,17 +906,16 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(&shell_config, "# existing zshrc\n").unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-        }
-        unsafe {
-            std::env::set_var("SHELL", "/bin/zsh");
-        }
-        unsafe {
-            std::env::set_var("ZDOTDIR", zdotdir.to_str().unwrap());
-        }
-
-        add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
+        add_to_path_for_shell(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            false,
+            "/bin/zsh",
+            Some(&zdotdir),
+        )
+        .unwrap();
 
         // Should write to $ZDOTDIR/.zshrc when it exists
         assert!(shell_config.exists());
@@ -918,7 +925,6 @@ mod tests {
 
     #[test]
     fn add_to_path_uses_fish_conf_d_for_fish() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -930,12 +936,16 @@ mod tests {
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-            std::env::set_var("SHELL", "/usr/bin/fish");
-        }
-
-        add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
+        add_to_path_for_shell(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            false,
+            "/usr/bin/fish",
+            None,
+        )
+        .unwrap();
 
         assert!(fish_config.exists());
         let content = fs::read_to_string(&fish_config).unwrap();
@@ -958,7 +968,6 @@ mod tests {
 
     #[test]
     fn add_to_path_falls_back_to_home_zshrc_when_zdotdir_files_missing() {
-        let _lock = env_lock();
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let zdotdir = tmp.path().join("zsh_config");
@@ -973,13 +982,16 @@ mod tests {
         fs::create_dir(&prefix).unwrap();
         fs::create_dir(&root).unwrap();
 
-        unsafe {
-            std::env::set_var("HOME", home.to_str().unwrap());
-            std::env::set_var("SHELL", "/bin/zsh");
-            std::env::set_var("ZDOTDIR", zdotdir.to_str().unwrap());
-        }
-
-        add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
+        add_to_path_for_shell(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            false,
+            "/bin/zsh",
+            Some(&zdotdir),
+        )
+        .unwrap();
 
         assert!(!zdotdir_zshrc.exists());
         assert!(home_zshrc.exists());
