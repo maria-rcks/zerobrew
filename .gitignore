@@ -1,5 +1,4 @@
 /target
+/node_modules
 **/*.rs.bk
 test_zb/
-/site/node_modules
-/site/_site
