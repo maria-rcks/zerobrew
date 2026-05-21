@@ -130,6 +130,37 @@ mod tests {
             super::Commands::Unlink { formulas } if formulas == vec!["foo".to_string()]
         ));
     }
+
+    #[test]
+    fn parses_search_text() {
+        let cli = Cli::try_parse_from(["zb", "search", "rip", "grep"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Search { text, .. } if text == vec!["rip".to_string(), "grep".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parses_reinstall_formula_names() {
+        let cli = Cli::try_parse_from(["zb", "reinstall", "foo"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Reinstall { formulas, .. } if formulas == vec!["foo".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parses_upgrade_without_names() {
+        let cli = Cli::try_parse_from(["zb", "upgrade", "--dry-run"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Upgrade {
+                formulas,
+                dry_run: true,
+                ..
+            } if formulas.is_empty()
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -179,6 +210,52 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    Reinstall {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+        #[arg(long)]
+        no_link: bool,
+        #[arg(long, short = 's')]
+        build_from_source: bool,
+        #[arg(long, conflicts_with = "formula")]
+        cask: bool,
+        #[arg(long, conflicts_with = "cask")]
+        formula: bool,
+        #[arg(long)]
+        appdir: Option<PathBuf>,
+        #[arg(long)]
+        fontdir: Option<PathBuf>,
+        #[arg(long)]
+        appimagedir: Option<PathBuf>,
+        #[arg(long)]
+        no_binaries: bool,
+        #[arg(long)]
+        force: bool,
+    },
+    Upgrade {
+        #[arg(num_args = 0..)]
+        formulas: Vec<String>,
+        #[arg(long, short = 'n')]
+        dry_run: bool,
+        #[arg(long)]
+        no_link: bool,
+        #[arg(long, short = 's')]
+        build_from_source: bool,
+        #[arg(long, conflicts_with = "formula")]
+        cask: bool,
+        #[arg(long, conflicts_with = "cask")]
+        formula: bool,
+        #[arg(long)]
+        appdir: Option<PathBuf>,
+        #[arg(long)]
+        fontdir: Option<PathBuf>,
+        #[arg(long)]
+        appimagedir: Option<PathBuf>,
+        #[arg(long)]
+        no_binaries: bool,
+        #[arg(long)]
+        force: bool,
+    },
     Link {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
@@ -218,6 +295,14 @@ pub enum Commands {
     },
     Shellenv {
         shell: Option<String>,
+    },
+    Search {
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
+        #[arg(long, conflicts_with = "cask")]
+        formula: bool,
+        #[arg(long, conflicts_with = "formula")]
+        cask: bool,
     },
     #[command(disable_help_flag = true)]
     Run {

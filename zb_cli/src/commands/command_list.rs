@@ -13,12 +13,15 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "list",
     "migrate",
     "outdated",
+    "reinstall",
     "reset",
     "run",
+    "search",
     "shellenv",
     "uninstall",
     "unlink",
     "update",
+    "upgrade",
 ];
 
 const COMMAND_ALIASES: &[&str] = &[];

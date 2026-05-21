@@ -106,6 +106,36 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             cask,
             formula,
         } => commands::uninstall::execute(&mut installer, formulas, all, cask, formula, &mut ui),
+        Commands::Reinstall {
+            formulas,
+            no_link,
+            build_from_source,
+            cask,
+            formula,
+            appdir,
+            fontdir,
+            appimagedir,
+            no_binaries,
+            force,
+        } => {
+            commands::reinstall::execute(
+                &mut installer,
+                commands::reinstall::ReinstallRequest {
+                    formulas,
+                    no_link,
+                    build_from_source,
+                    cask,
+                    formula,
+                    appdir,
+                    fontdir,
+                    appimagedir,
+                    no_binaries,
+                    force,
+                },
+                &mut ui,
+            )
+            .await
+        }
         Commands::Migrate { yes, force } => {
             commands::migrate::execute(&mut installer, yes, force, &mut ui).await
         }
@@ -121,6 +151,43 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Outdated { json } => {
             commands::outdated::execute(&mut installer, cli.quiet, cli.verbose > 0, json).await
         }
+        Commands::Upgrade {
+            formulas,
+            dry_run,
+            no_link,
+            build_from_source,
+            cask,
+            formula,
+            appdir,
+            fontdir,
+            appimagedir,
+            no_binaries,
+            force,
+        } => {
+            commands::upgrade::execute(
+                &mut installer,
+                commands::upgrade::UpgradeRequest {
+                    formulas,
+                    dry_run,
+                    no_link,
+                    build_from_source,
+                    cask,
+                    formula,
+                    appdir,
+                    fontdir,
+                    appimagedir,
+                    no_binaries,
+                    force,
+                },
+                &mut ui,
+            )
+            .await
+        }
+        Commands::Search {
+            text,
+            formula,
+            cask,
+        } => commands::search::execute(&mut installer, text, formula, cask).await,
         Commands::Reset { yes } => commands::reset::execute(&root, &prefix, yes, &mut ui),
         Commands::Run { formula, args } => {
             commands::run::execute(&mut installer, formula, args).await
