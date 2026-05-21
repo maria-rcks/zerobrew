@@ -28,7 +28,10 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "upgrade",
 ];
 
-const COMMAND_ALIASES: &[&str] = &[];
+const COMMAND_ALIASES: &[&str] = &[
+    "add", "b", "cfg", "check", "clean", "cmds", "env", "find", "i", "leaf", "ln", "ls", "old",
+    "prune", "re", "remove", "rm", "show", "ug", "unln", "up",
+];
 
 pub fn execute(quiet: bool, include_aliases: bool) -> Result<(), zb_core::Error> {
     let mut commands = BUILT_IN_COMMANDS.to_vec();
@@ -61,5 +64,12 @@ mod tests {
         let mut sorted = BUILT_IN_COMMANDS.to_vec();
         sorted.sort_unstable();
         assert_eq!(BUILT_IN_COMMANDS, sorted);
+    }
+
+    #[test]
+    fn command_aliases_stay_sorted() {
+        let mut sorted = super::COMMAND_ALIASES.to_vec();
+        sorted.sort_unstable();
+        assert_eq!(super::COMMAND_ALIASES, sorted);
     }
 }

@@ -181,6 +181,58 @@ mod tests {
             super::Commands::Config
         ));
     }
+
+    #[test]
+    fn parses_new_command_aliases() {
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "cmds", "--quiet"])
+                .unwrap()
+                .command,
+            super::Commands::Commands { quiet: true, .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "env"]).unwrap().command,
+            super::Commands::Shellenv { .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "ln", "foo"]).unwrap().command,
+            super::Commands::Link { formulas } if formulas == vec!["foo".to_string()]
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "unln", "foo"]).unwrap().command,
+            super::Commands::Unlink { formulas } if formulas == vec!["foo".to_string()]
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "find", "ripgrep"]).unwrap().command,
+            super::Commands::Search { text, .. } if text == vec!["ripgrep".to_string()]
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "re", "foo"]).unwrap().command,
+            super::Commands::Reinstall { formulas, .. } if formulas == vec!["foo".to_string()]
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "ug", "--dry-run"])
+                .unwrap()
+                .command,
+            super::Commands::Upgrade { dry_run: true, .. }
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "prune"]).unwrap().command,
+            super::Commands::Autoremove
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "clean"]).unwrap().command,
+            super::Commands::Cleanup
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "leaf"]).unwrap().command,
+            super::Commands::Leaves
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "cfg"]).unwrap().command,
+            super::Commands::Config
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -213,8 +265,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<BundleCommands>,
     },
+    #[command(visible_alias = "prune")]
     Autoremove,
+    #[command(visible_alias = "clean")]
     Cleanup,
+    #[command(visible_alias = "cfg")]
     Config,
     #[command(visible_aliases = ["rm", "remove"])]
     Uninstall {
@@ -233,6 +288,7 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    #[command(visible_alias = "re")]
     Reinstall {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
@@ -255,6 +311,7 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    #[command(visible_alias = "ug")]
     Upgrade {
         #[arg(num_args = 0..)]
         formulas: Vec<String>,
@@ -279,25 +336,29 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    #[command(visible_alias = "ln")]
     Link {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
     },
+    #[command(visible_alias = "unln")]
     Unlink {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
     },
+    #[command(visible_alias = "leaf")]
     Leaves,
     #[command(visible_alias = "ls")]
     List,
     #[command(visible_alias = "show")]
-    Info { formula: String },
+    Info {
+        formula: String,
+    },
     #[command(visible_alias = "check")]
     Doctor {
         #[arg(long)]
         repair: bool,
     },
-    #[command(visible_aliases = ["clean", "cleanup"])]
     Gc,
     Reset {
         #[arg(long, short = 'y')]
@@ -311,15 +372,18 @@ pub enum Commands {
         #[arg(value_enum)]
         shell: clap_complete::shells::Shell,
     },
+    #[command(visible_alias = "cmds")]
     Commands {
         #[arg(long, short = 'q')]
         quiet: bool,
         #[arg(long, requires = "quiet")]
         include_aliases: bool,
     },
+    #[command(visible_alias = "env")]
     Shellenv {
         shell: Option<String>,
     },
+    #[command(visible_alias = "find")]
     Search {
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
