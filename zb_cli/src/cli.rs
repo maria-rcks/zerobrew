@@ -91,10 +91,23 @@ mod tests {
         let result = Cli::try_parse_from(["zb", "outdated", "--verbose", "--json"]);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn parses_install_aliases() {
+        for alias in ["i", "add"] {
+            let cli = Cli::try_parse_from(["zb", alias, "jq"]).unwrap();
+
+            let super::Commands::Install { formulas, .. } = cli.command else {
+                panic!("expected install command for alias {alias}");
+            };
+            assert_eq!(formulas, ["jq"]);
+        }
+    }
 }
 
 #[derive(Subcommand)]
 pub enum Commands {
+    #[command(visible_aliases = ["i", "add"])]
     Install {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
