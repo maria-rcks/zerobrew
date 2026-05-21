@@ -217,7 +217,7 @@ test:
 [group('benchmark')]
 bench-fns:
     cargo bench -p zb_bench --bench workspace_hotspots
-    cargo run --quiet -p zb_bench -- zb_bench/target/criterion
+    cargo run --quiet -p zb_bench
 
 [doc('Run benchmark comparing zerobrew vs homebrew')]
 [group('benchmark')]
