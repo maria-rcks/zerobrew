@@ -6,7 +6,7 @@ Thanks for your interest in contributing to zerobrew! This document provides gui
 
 This repository is an independent fork of the original
 [`lucasgelfond/zerobrew`](https://github.com/lucasgelfond/zerobrew) project.
-The current fork is maintained under `autom8n/zerobrew` and is intentionally
+The current fork is maintained under `maria-rcks/zerobrew` and is intentionally
 maintainer-led while the project direction is being refined.
 
 External issues and pull requests are welcome, but roadmap and merge decisions

@@ -18,7 +18,7 @@ project history before this fork.
 
 ### Changed
 - Repository ownership, install documentation, and release automation now point
-  at `autom8n/zerobrew`.
+  at `maria-rcks/zerobrew`.
 - Split monolithic install module into focused submodules ([#312](https://github.com/lucasgelfond/zerobrew/pull/312))
 - Split monolithic download module into focused submodules ([#313](https://github.com/lucasgelfond/zerobrew/pull/313))
 
@@ -95,8 +95,8 @@ To get an idea of the initial features zerobrew supports, take a look at the [RE
 
 See the [full commit history](https://github.com/lucasgelfond/zerobrew/commits/v0.1.1) for more details.
 
-[Unreleased]: https://github.com/autom8n/zerobrew/compare/v0.2.1...HEAD
-[0.2.1]: https://github.com/autom8n/zerobrew/compare/v0.2.0...v0.2.1
-[0.2.0]: https://github.com/autom8n/zerobrew/compare/v0.1.2...v0.2.0
-[0.1.2]: https://github.com/autom8n/zerobrew/compare/v0.1.1...v0.1.2
-[0.1.1]: https://github.com/autom8n/zerobrew/releases/tag/v0.1.1
+[Unreleased]: https://github.com/maria-rcks/zerobrew/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/maria-rcks/zerobrew/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/maria-rcks/zerobrew/compare/v0.1.2...v0.2.0
+[0.1.2]: https://github.com/maria-rcks/zerobrew/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/maria-rcks/zerobrew/releases/tag/v0.1.1

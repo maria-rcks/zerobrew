@@ -55,7 +55,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-ZEROBREW_REPO="https://github.com/autom8n/zerobrew.git"
+ZEROBREW_REPO="https://github.com/maria-rcks/zerobrew.git"
 : "${ZEROBREW_DIR:=$HOME/.zerobrew}"
 : "${ZEROBREW_BIN:=$HOME/.local/bin}"
 
@@ -81,7 +81,7 @@ export ZEROBREW_PREFIX
 # A prior `zb init` adds $ZEROBREW_PREFIX/bin to PATH, which can cause
 # zerobrew's curl/git (linked against zerobrew's OpenSSL) to be used by
 # this script. On some macOS versions that leads to dyld symbol errors.
-# see https://github.com/autom8n/zerobrew/issues/288
+# see https://github.com/maria-rcks/zerobrew/issues/288
 sanitized_path=""
 IFS=':' read -ra _path_parts <<< "$PATH"
 for _p in "${_path_parts[@]}"; do
@@ -247,7 +247,7 @@ download_release_binary() {
     local output_name="$2"
     local required="${3:-true}"
     local downloaded_path="$DOWNLOAD_TEMP_DIR/${output_name}"
-    local download_url="https://github.com/autom8n/zerobrew/releases/latest/download/${asset_name}"
+    local download_url="https://github.com/maria-rcks/zerobrew/releases/latest/download/${asset_name}"
 
     (
         curl -fsL --retry 3 --retry-delay 1 --connect-timeout 10 \
@@ -322,7 +322,7 @@ print_logo() {
     printf "%bStart installing %bPackages%b with %bzerobrew%b:\n\n" "$MUTED" "$NC" "$MUTED" "$ORANGE" "$NC"
     printf "  zb install %bffmpeg%b    # Install a Package%b\n" "$ORANGE" "$MUTED" "$NC"
     printf "  zbx %byetris%b           # Single-time Run%b\n\n" "$ORANGE" "$MUTED" "$NC"
-    printf "%bFor more information visit %bhttps://github.com/autom8n/zerobrew\n\n" "$MUTED" "$NC"
+    printf "%bFor more information visit %bhttps://github.com/maria-rcks/zerobrew\n\n" "$MUTED" "$NC"
 }
 
 while [[ $# -gt 0 ]]; do
