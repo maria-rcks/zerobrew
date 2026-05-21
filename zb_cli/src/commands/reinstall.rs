@@ -40,25 +40,26 @@ pub async fn execute(
         }
     }
 
-    for name in &names {
-        installer.uninstall(name)?;
+    for name in names {
+        installer.uninstall(&name)?;
+        install::execute(
+            installer,
+            InstallRequest {
+                formulas: vec![name],
+                no_link: request.no_link,
+                build_from_source: request.build_from_source,
+                cask: request.cask,
+                formula: request.formula,
+                appdir: request.appdir.clone(),
+                fontdir: request.fontdir.clone(),
+                appimagedir: request.appimagedir.clone(),
+                no_binaries: request.no_binaries,
+                force: request.force,
+            },
+            ui,
+        )
+        .await?;
     }
 
-    install::execute(
-        installer,
-        InstallRequest {
-            formulas: names,
-            no_link: request.no_link,
-            build_from_source: request.build_from_source,
-            cask: request.cask,
-            formula: request.formula,
-            appdir: request.appdir,
-            fontdir: request.fontdir,
-            appimagedir: request.appimagedir,
-            no_binaries: request.no_binaries,
-            force: request.force,
-        },
-        ui,
-    )
-    .await
+    Ok(())
 }

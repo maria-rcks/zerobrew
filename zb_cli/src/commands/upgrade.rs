@@ -24,20 +24,25 @@ pub async fn execute(
     request: UpgradeRequest,
     ui: &mut StdUi,
 ) -> Result<(), zb_core::Error> {
+    let kind = if request.cask {
+        PackageKind::Cask
+    } else if request.formula {
+        PackageKind::Formula
+    } else {
+        PackageKind::Auto
+    };
+
     let names = if request.formulas.is_empty() {
         let (outdated, warnings) = installer.check_outdated().await?;
         for warning in warnings {
             ui.warn(warning).map_err(ui_error)?;
         }
-        outdated.into_iter().map(|pkg| pkg.name).collect()
+        outdated
+            .into_iter()
+            .filter(|pkg| package_matches_kind(&pkg.name, kind))
+            .map(|pkg| pkg.name)
+            .collect()
     } else {
-        let kind = if request.cask {
-            PackageKind::Cask
-        } else if request.formula {
-            PackageKind::Formula
-        } else {
-            PackageKind::Auto
-        };
         request
             .formulas
             .iter()
@@ -80,8 +85,33 @@ pub async fn execute(
     .await
 }
 
+fn package_matches_kind(name: &str, kind: PackageKind) -> bool {
+    match kind {
+        PackageKind::Auto => true,
+        PackageKind::Formula => !name.starts_with("cask:"),
+        PackageKind::Cask => name.starts_with("cask:"),
+    }
+}
+
 fn ui_error(err: std::io::Error) -> zb_core::Error {
     zb_core::Error::StoreCorruption {
         message: format!("failed to write CLI output: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::utils::PackageKind;
+
+    use super::package_matches_kind;
+
+    #[test]
+    fn package_kind_filter_matches_formula_and_cask_names() {
+        assert!(package_matches_kind("wget", PackageKind::Auto));
+        assert!(package_matches_kind("cask:firefox", PackageKind::Auto));
+        assert!(package_matches_kind("wget", PackageKind::Formula));
+        assert!(!package_matches_kind("cask:firefox", PackageKind::Formula));
+        assert!(package_matches_kind("cask:firefox", PackageKind::Cask));
+        assert!(!package_matches_kind("wget", PackageKind::Cask));
     }
 }

@@ -5,6 +5,7 @@ mod plan;
 mod source;
 mod uninstall;
 
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -464,29 +465,59 @@ impl Installer {
         self.db.list_installed()
     }
 
+    pub async fn list_leaves(&self) -> Result<Vec<crate::storage::db::InstalledKeg>, Error> {
+        let installed = self.db.list_installed()?;
+        let formula_kegs: Vec<_> = installed
+            .into_iter()
+            .filter(|keg| !keg.name.starts_with("cask:"))
+            .collect();
+
+        let installed_tokens: HashSet<_> = formula_kegs
+            .iter()
+            .map(|keg| formula_token(&keg.name).to_string())
+            .collect();
+        let mut dependency_tokens = HashSet::new();
+
+        for keg in &formula_kegs {
+            let formula = self.api_client.get_formula(&keg.name).await?;
+            for dependency in formula.dependencies {
+                let token = formula_token(&dependency);
+                if installed_tokens.contains(token) {
+                    dependency_tokens.insert(token.to_string());
+                }
+            }
+        }
+
+        Ok(formula_kegs
+            .into_iter()
+            .filter(|keg| !dependency_tokens.contains(formula_token(&keg.name)))
+            .collect())
+    }
+
     pub fn link_installed(&mut self, name: &str) -> Result<Vec<crate::cellar::LinkedFile>, Error> {
+        let _lock = self.acquire_install_lock()?;
         let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
             name: name.to_string(),
         })?;
         let keg_path = self.keg_path(formula_token(&installed.name), &installed.version);
         let linked = self.linker.link_keg(&keg_path)?;
 
-        let tx = self.db.transaction()?;
-        tx.clear_keg_file_records(name)?;
-        for file in &linked {
-            tx.record_linked_file(
-                name,
-                &installed.version,
-                &file.link_path.to_string_lossy(),
-                &file.target_path.to_string_lossy(),
-            )?;
+        if let Err(err) = self.persist_linked_files(name, &installed.version, &linked) {
+            if let Err(unlink_err) = self.linker.unlink_keg(&keg_path) {
+                warn!(
+                    formula = %name,
+                    error = %unlink_err,
+                    "failed to roll back links after DB persistence error"
+                );
+            }
+            return Err(err);
         }
-        tx.commit()?;
 
         Ok(linked)
     }
 
     pub fn unlink_installed(&mut self, name: &str) -> Result<Vec<PathBuf>, Error> {
+        let _lock = self.acquire_install_lock()?;
         let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
             name: name.to_string(),
         })?;
@@ -498,6 +529,36 @@ impl Installer {
         tx.commit()?;
 
         Ok(unlinked)
+    }
+
+    fn acquire_install_lock(&self) -> Result<File, Error> {
+        fs::create_dir_all(&self.locks_dir).map_err(Error::store("failed to create locks dir"))?;
+        let lock_path = self.locks_dir.join("install.lock");
+        let lock_file =
+            File::create(&lock_path).map_err(Error::store("failed to create install lock"))?;
+        lock_file
+            .lock_exclusive()
+            .map_err(Error::store("failed to acquire install lock"))?;
+        Ok(lock_file)
+    }
+
+    fn persist_linked_files(
+        &mut self,
+        name: &str,
+        version: &str,
+        linked: &[crate::cellar::LinkedFile],
+    ) -> Result<(), Error> {
+        let tx = self.db.transaction()?;
+        tx.clear_keg_file_records(name)?;
+        for file in linked {
+            tx.record_linked_file(
+                name,
+                version,
+                &file.link_path.to_string_lossy(),
+                &file.target_path.to_string_lossy(),
+            )?;
+        }
+        tx.commit()
     }
 
     pub fn keg_path(&self, name: &str, version: &str) -> PathBuf {
@@ -703,10 +764,17 @@ mod tests {
     use super::test_support::*;
 
     fn create_local_installer(root: &std::path::Path, prefix: &std::path::Path) -> Installer {
+        create_local_installer_with_api(root, prefix, "http://127.0.0.1:1/formula".to_string())
+    }
+
+    fn create_local_installer_with_api(
+        root: &std::path::Path,
+        prefix: &std::path::Path,
+        api_url: String,
+    ) -> Installer {
         fs::create_dir_all(root.join("db")).unwrap();
 
-        let api_client = ApiClient::with_base_url("http://127.0.0.1:1/formula".to_string())
-            .expect("test API URL should be valid");
+        let api_client = ApiClient::with_base_url(api_url).expect("test API URL should be valid");
         let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
         let store = Store::new(root).unwrap();
         let cellar = Cellar::new_at(prefix.join("Cellar")).unwrap();
@@ -771,6 +839,72 @@ mod tests {
         assert_eq!(unlinked.len(), 1);
         assert!(!prefix.join("bin/unlinkme").exists());
         assert!(installer.db.list_keg_files().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_leaves_excludes_installed_dependencies() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        let root_formula = r#"{
+            "name": "root",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": ["dep"],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "all": {
+                            "url": "https://example.com/root.tar.gz",
+                            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                    }
+                }
+            }
+        }"#;
+        let dep_formula = r#"{
+            "name": "dep",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": [],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "all": {
+                            "url": "https://example.com/dep.tar.gz",
+                            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        Mock::given(method("GET"))
+            .and(path("/formula/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(root_formula))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/formula/dep.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(dep_formula))
+            .mount(&mock_server)
+            .await;
+
+        let tx = installer.db.transaction().unwrap();
+        tx.record_install("dep", "1.0.0", "dep-key").unwrap();
+        tx.record_install("root", "1.0.0", "root-key").unwrap();
+        tx.record_install("cask:app", "1.0.0", "app-key").unwrap();
+        tx.commit().unwrap();
+
+        let leaves = installer.list_leaves().await.unwrap();
+        let names: Vec<_> = leaves.into_iter().map(|keg| keg.name).collect();
+
+        assert_eq!(names, vec!["root"]);
     }
 
     #[tokio::test]
