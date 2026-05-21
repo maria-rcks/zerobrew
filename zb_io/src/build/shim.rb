@@ -90,6 +90,51 @@ module Kernel
   end
 end
 
+module Utils
+  def self.popen_read(*args, safe: false, **options, &block)
+    command_env = args.first.is_a?(Hash) ? args.shift.transform_keys(&:to_s).transform_values(&:to_s) : {}
+    command = args.map(&:to_s)
+    output = popen(command_env, command, "r", options, &block)
+
+    if safe && !$?.success?
+      raise "command failed: #{command.join(" ")} (exit status: #{$?.exitstatus})\n#{output}"
+    end
+
+    output
+  end
+
+  def self.safe_popen_read(*args, **options, &block)
+    popen_read(*args, safe: true, **options, &block)
+  end
+
+  def self.popen(command_env, command, mode, options = {}, &block)
+    popen_options = normalize_popen_options(options)
+
+    IO.popen([command_env, *command, popen_options], mode) do |pipe|
+      return yield pipe if block_given?
+
+      pipe.read
+    end
+  rescue Errno::ENOENT
+    $stderr.puts "brew: command not found: #{command.first}"
+    exit 127
+  end
+
+  def self.normalize_popen_options(options)
+    popen_options = {}
+    popen_options[:chdir] = options[:chdir].to_s if options.key?(:chdir)
+
+    if options.key?(:err)
+      popen_options[:err] = options[:err] == :out ? [:child, :out] : options[:err]
+    elsif !ENV["HOMEBREW_STDERR"]
+      popen_options[:err] = File::NULL
+    end
+
+    popen_options
+  end
+  private_class_method :popen, :normalize_popen_options
+end
+
 class FormulaVersion < String
   def major
     FormulaVersion.new(split(".")[0] || self)
