@@ -13,7 +13,7 @@ Run:
 just bench-fns
 ```
 
-The recipe runs the Criterion suite in `zb_bench/benches/workspace_hotspots.rs`, then reads `zb_bench/target/criterion/**/new/estimates.json` and prints the slowest and fastest benchmarked functions by mean time. The slowest list is intended to become the optimization backlog.
+The recipe runs the Criterion suite in `zb_bench/benches/workspace_hotspots.rs`, then reads the generated Criterion `**/new/estimates.json` files and prints the slowest and fastest benchmarked functions by mean time. The slowest list is intended to become the optimization backlog.
 
 The current suite covers representative hot paths from every crate:
 
@@ -32,7 +32,7 @@ When comparing optimization work:
 ```sh
 cargo bench -p zb_bench --bench workspace_hotspots -- --save-baseline main
 cargo bench -p zb_bench --bench workspace_hotspots -- --baseline main
-cargo run --quiet -p zb_bench -- zb_bench/target/criterion
+cargo run --quiet -p zb_bench
 ```
 
-Criterion keeps the detailed statistical reports in `zb_bench/target/criterion/`.
+Criterion keeps the detailed statistical reports in `target/criterion/` or `zb_bench/target/criterion/`, depending on the Cargo bench target directory layout.
