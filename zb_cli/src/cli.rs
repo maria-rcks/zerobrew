@@ -122,6 +122,33 @@ mod tests {
 
         assert!(matches!(cli.command, super::Commands::List));
     }
+
+    #[test]
+    fn parses_info_alias() {
+        let cli = Cli::try_parse_from(["zb", "show", "jq"]).unwrap();
+
+        let super::Commands::Info { formula } = cli.command else {
+            panic!("expected info command");
+        };
+        assert_eq!(formula, "jq");
+    }
+
+    #[test]
+    fn parses_maintenance_aliases() {
+        let cli = Cli::try_parse_from(["zb", "check"]).unwrap();
+        assert!(matches!(cli.command, super::Commands::Doctor { .. }));
+
+        for alias in ["clean", "cleanup"] {
+            let cli = Cli::try_parse_from(["zb", alias]).unwrap();
+            assert!(matches!(cli.command, super::Commands::Gc));
+        }
+
+        let cli = Cli::try_parse_from(["zb", "up"]).unwrap();
+        assert!(matches!(cli.command, super::Commands::Update));
+
+        let cli = Cli::try_parse_from(["zb", "old"]).unwrap();
+        assert!(matches!(cli.command, super::Commands::Outdated { .. }));
+    }
 }
 
 #[derive(Subcommand)]
@@ -172,13 +199,14 @@ pub enum Commands {
     },
     #[command(visible_alias = "ls")]
     List,
-    Info {
-        formula: String,
-    },
+    #[command(visible_alias = "show")]
+    Info { formula: String },
+    #[command(visible_alias = "check")]
     Doctor {
         #[arg(long)]
         repair: bool,
     },
+    #[command(visible_aliases = ["clean", "cleanup"])]
     Gc,
     Reset {
         #[arg(long, short = 'y')]
@@ -198,7 +226,9 @@ pub enum Commands {
         #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
         args: Vec<String>,
     },
+    #[command(visible_alias = "up")]
     Update,
+    #[command(visible_alias = "old")]
     Outdated {
         /// Output as JSON
         #[arg(long, conflicts_with_all = ["quiet", "verbose"])]
