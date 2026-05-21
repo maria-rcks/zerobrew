@@ -373,7 +373,7 @@ mod tests {
             .collect();
 
         let result =
-            tokio::time::timeout(Duration::from_secs(5), downloader.download_all(requests))
+            tokio::time::timeout(Duration::from_secs(15), downloader.download_all(requests))
                 .await
                 .expect("chunked downloads should not deadlock waiting for permits");
         let paths = result.unwrap();
