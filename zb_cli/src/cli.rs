@@ -103,6 +103,25 @@ mod tests {
             assert_eq!(formulas, ["jq"]);
         }
     }
+
+    #[test]
+    fn parses_uninstall_aliases() {
+        for alias in ["rm", "remove"] {
+            let cli = Cli::try_parse_from(["zb", alias, "jq"]).unwrap();
+
+            let super::Commands::Uninstall { formulas, .. } = cli.command else {
+                panic!("expected uninstall command for alias {alias}");
+            };
+            assert_eq!(formulas, ["jq"]);
+        }
+    }
+
+    #[test]
+    fn parses_list_alias() {
+        let cli = Cli::try_parse_from(["zb", "ls"]).unwrap();
+
+        assert!(matches!(cli.command, super::Commands::List));
+    }
 }
 
 #[derive(Subcommand)]
@@ -134,6 +153,7 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<BundleCommands>,
     },
+    #[command(visible_aliases = ["rm", "remove"])]
     Uninstall {
         #[arg(required_unless_present = "all", num_args = 1..)]
         formulas: Vec<String>,
@@ -150,6 +170,7 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    #[command(visible_alias = "ls")]
     List,
     Info {
         formula: String,
