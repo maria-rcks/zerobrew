@@ -112,6 +112,24 @@ mod tests {
             super::Commands::Shellenv { shell: Some(shell) } if shell == "fish"
         ));
     }
+
+    #[test]
+    fn parses_link_formula_names() {
+        let cli = Cli::try_parse_from(["zb", "link", "foo", "bar"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Link { formulas } if formulas == vec!["foo".to_string(), "bar".to_string()]
+        ));
+    }
+
+    #[test]
+    fn parses_unlink_formula_names() {
+        let cli = Cli::try_parse_from(["zb", "unlink", "foo"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Unlink { formulas } if formulas == vec!["foo".to_string()]
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -160,6 +178,14 @@ pub enum Commands {
         yes: bool,
         #[arg(long)]
         force: bool,
+    },
+    Link {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
+    },
+    Unlink {
+        #[arg(required = true, num_args = 1..)]
+        formulas: Vec<String>,
     },
     #[command(visible_alias = "ls")]
     List,

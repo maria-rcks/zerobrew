@@ -464,6 +464,42 @@ impl Installer {
         self.db.list_installed()
     }
 
+    pub fn link_installed(&mut self, name: &str) -> Result<Vec<crate::cellar::LinkedFile>, Error> {
+        let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
+            name: name.to_string(),
+        })?;
+        let keg_path = self.keg_path(formula_token(&installed.name), &installed.version);
+        let linked = self.linker.link_keg(&keg_path)?;
+
+        let tx = self.db.transaction()?;
+        tx.clear_keg_file_records(name)?;
+        for file in &linked {
+            tx.record_linked_file(
+                name,
+                &installed.version,
+                &file.link_path.to_string_lossy(),
+                &file.target_path.to_string_lossy(),
+            )?;
+        }
+        tx.commit()?;
+
+        Ok(linked)
+    }
+
+    pub fn unlink_installed(&mut self, name: &str) -> Result<Vec<PathBuf>, Error> {
+        let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
+            name: name.to_string(),
+        })?;
+        let keg_path = self.keg_path(formula_token(&installed.name), &installed.version);
+        let unlinked = self.linker.unlink_keg(&keg_path)?;
+
+        let tx = self.db.transaction()?;
+        tx.clear_keg_file_records(name)?;
+        tx.commit()?;
+
+        Ok(unlinked)
+    }
+
     pub fn keg_path(&self, name: &str, version: &str) -> PathBuf {
         self.cellar.keg_path(name, version)
     }
@@ -665,6 +701,77 @@ mod tests {
     use crate::{Installer, Linker};
 
     use super::test_support::*;
+
+    fn create_local_installer(root: &std::path::Path, prefix: &std::path::Path) -> Installer {
+        fs::create_dir_all(root.join("db")).unwrap();
+
+        let api_client = ApiClient::with_base_url("http://127.0.0.1:1/formula".to_string())
+            .expect("test API URL should be valid");
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(root).unwrap();
+        let cellar = Cellar::new_at(prefix.join("Cellar")).unwrap();
+        let linker = Linker::new(prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+
+        Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix.to_path_buf(),
+            root.join("locks"),
+        )
+    }
+
+    fn create_installed_binary(installer: &mut Installer, name: &str, version: &str) {
+        let keg_path = installer.keg_path(name, version);
+        fs::create_dir_all(keg_path.join("bin")).unwrap();
+        fs::write(keg_path.join("bin").join(name), b"#!/bin/sh\n").unwrap();
+
+        let tx = installer.db.transaction().unwrap();
+        tx.record_install(name, version, "store-key").unwrap();
+        tx.commit().unwrap();
+    }
+
+    #[test]
+    fn link_installed_records_symlinks() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = create_local_installer(&root, &prefix);
+        create_installed_binary(&mut installer, "linkme", "1.0.0");
+
+        let linked = installer.link_installed("linkme").unwrap();
+
+        assert_eq!(linked.len(), 1);
+        assert!(prefix.join("bin/linkme").is_symlink());
+
+        let records = installer.db.list_keg_files().unwrap();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].name, "linkme");
+        assert_eq!(
+            records[0].linked_path,
+            prefix.join("bin/linkme").to_string_lossy()
+        );
+    }
+
+    #[test]
+    fn unlink_installed_removes_symlinks_and_records() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = create_local_installer(&root, &prefix);
+        create_installed_binary(&mut installer, "unlinkme", "1.0.0");
+        installer.link_installed("unlinkme").unwrap();
+
+        let unlinked = installer.unlink_installed("unlinkme").unwrap();
+
+        assert_eq!(unlinked.len(), 1);
+        assert!(!prefix.join("bin/unlinkme").exists());
+        assert!(installer.db.list_keg_files().unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn install_completes_successfully() {

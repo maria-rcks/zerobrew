@@ -9,6 +9,7 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "info",
     "init",
     "install",
+    "link",
     "list",
     "migrate",
     "outdated",
@@ -16,6 +17,7 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "run",
     "shellenv",
     "uninstall",
+    "unlink",
     "update",
 ];
 
