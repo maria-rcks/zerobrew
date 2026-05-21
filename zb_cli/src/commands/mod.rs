@@ -1,11 +1,13 @@
 pub mod bundle;
 pub mod command_list;
 pub mod completion;
+pub mod config;
 pub mod doctor;
 pub mod gc;
 pub mod info;
 pub mod init;
 pub mod install;
+pub mod leaves;
 pub mod link;
 pub mod list;
 pub mod migrate;

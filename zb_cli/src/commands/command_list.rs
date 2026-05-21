@@ -1,14 +1,18 @@
 use console::style;
 
 const BUILT_IN_COMMANDS: &[&str] = &[
+    "autoremove",
     "bundle",
+    "cleanup",
     "commands",
     "completion",
+    "config",
     "doctor",
     "gc",
     "info",
     "init",
     "install",
+    "leaves",
     "link",
     "list",
     "migrate",

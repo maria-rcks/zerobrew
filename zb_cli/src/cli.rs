@@ -161,6 +161,26 @@ mod tests {
             } if formulas.is_empty()
         ));
     }
+
+    #[test]
+    fn parses_maintenance_commands() {
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "cleanup"]).unwrap().command,
+            super::Commands::Cleanup
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "autoremove"]).unwrap().command,
+            super::Commands::Autoremove
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "leaves"]).unwrap().command,
+            super::Commands::Leaves
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["zb", "config"]).unwrap().command,
+            super::Commands::Config
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -193,6 +213,9 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<BundleCommands>,
     },
+    Autoremove,
+    Cleanup,
+    Config,
     #[command(visible_aliases = ["rm", "remove"])]
     Uninstall {
         #[arg(required_unless_present = "all", num_args = 1..)]
@@ -264,6 +287,7 @@ pub enum Commands {
         #[arg(required = true, num_args = 1..)]
         formulas: Vec<String>,
     },
+    Leaves,
     #[command(visible_alias = "ls")]
     List,
     #[command(visible_alias = "show")]
