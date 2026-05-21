@@ -90,7 +90,8 @@ pub fn run_init(
             format!("{}/.zerobrew", home)
         }
     };
-    let zerobrew_bin = format!("{}/bin", zerobrew_dir);
+    let configured_bin = std::env::var("ZEROBREW_BIN").ok();
+    let zerobrew_bin = resolve_zerobrew_bin(&zerobrew_dir, configured_bin.as_deref());
 
     let dirs_to_create: Vec<PathBuf> = vec![
         root.to_path_buf(),
@@ -189,6 +190,13 @@ pub fn run_init(
 
 const ZB_BLOCK_START: &str = "# >>> zerobrew >>>";
 const ZB_BLOCK_END: &str = "# <<< zerobrew <<<";
+
+fn resolve_zerobrew_bin(zerobrew_dir: &str, configured_bin: Option<&str>) -> String {
+    configured_bin
+        .filter(|bin| !bin.trim().is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{}/bin", zerobrew_dir))
+}
 
 fn upsert_managed_block(existing: &str, managed_block: &str) -> String {
     if let Some(start_idx) = existing.find(ZB_BLOCK_START)
@@ -343,17 +351,32 @@ if [ -z "${{SSL_CERT_DIR:-}}" ]; then
   fi
 fi
 
-# Helper function to safely append to PATH
-_zb_path_append() {{
+# Helper function to safely move zerobrew paths to the front of PATH
+_zb_path_prepend() {{
     local argpath="$1"
-    case ":${{PATH}}:" in
-        *:"$argpath":*) ;;
-        *) export PATH="$argpath:$PATH" ;;
-    esac;
+    local old_ifs="$IFS"
+    local new_path=""
+    local path_entry
+    IFS=:
+    for path_entry in $PATH; do
+        if [ "$path_entry" != "$argpath" ] && [ -n "$path_entry" ]; then
+            if [ -n "$new_path" ]; then
+                new_path="$new_path:$path_entry"
+            else
+                new_path="$path_entry"
+            fi
+        fi
+    done
+    IFS="$old_ifs"
+    if [ -n "$new_path" ]; then
+        export PATH="$argpath:$new_path"
+    else
+        export PATH="$argpath"
+    fi
 }}
 
-_zb_path_append "$ZEROBREW_BIN"
-_zb_path_append "$ZEROBREW_PREFIX/bin"
+_zb_path_prepend "$ZEROBREW_BIN"
+_zb_path_prepend "$ZEROBREW_PREFIX/bin"
 "#,
                 zerobrew_dir = zerobrew_dir,
                 zerobrew_bin = zerobrew_bin,
@@ -400,11 +423,11 @@ if not set -q SSL_CERT_DIR
     end
 end
 
-if not contains -- "$ZEROBREW_BIN" $PATH
-    set -gx PATH "$ZEROBREW_BIN" $PATH
-end
-if not contains -- "$ZEROBREW_PREFIX/bin" $PATH
-    set -gx PATH "$ZEROBREW_PREFIX/bin" $PATH
+for zb_path in "$ZEROBREW_BIN" "$ZEROBREW_PREFIX/bin"
+    if contains -- "$zb_path" $PATH
+        set -gx PATH (string match --invert --entire -- "$zb_path" $PATH)
+    end
+    set -gx PATH "$zb_path" $PATH
 end
 "#,
                 zerobrew_dir = zerobrew_dir,
@@ -626,6 +649,26 @@ mod tests {
     }
 
     #[test]
+    fn resolve_zerobrew_bin_uses_configured_value() {
+        assert_eq!(
+            resolve_zerobrew_bin("/home/user/.zerobrew", Some("/home/user/.local/bin")),
+            "/home/user/.local/bin"
+        );
+    }
+
+    #[test]
+    fn resolve_zerobrew_bin_falls_back_to_zerobrew_dir() {
+        assert_eq!(
+            resolve_zerobrew_bin("/home/user/.zerobrew", None),
+            "/home/user/.zerobrew/bin"
+        );
+        assert_eq!(
+            resolve_zerobrew_bin("/home/user/.zerobrew", Some("")),
+            "/home/user/.zerobrew/bin"
+        );
+    }
+
+    #[test]
     fn is_writable_returns_false_for_readonly_dir() {
         let tmp = TempDir::new().unwrap();
         let readonly = tmp.path().join("readonly");
@@ -681,7 +724,7 @@ mod tests {
     }
 
     #[test]
-    fn add_to_path_includes_path_append_function() {
+    fn add_to_path_includes_path_prepend_function() {
         let tmp = TempDir::new().unwrap();
         let home = tmp.path();
         let prefix = tmp.path().join("prefix");
@@ -696,9 +739,9 @@ mod tests {
         add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
 
         let content = fs::read_to_string(&shell_config).unwrap();
-        assert!(content.contains("_zb_path_append()"));
-        assert!(content.contains("case \":${PATH}:"));
-        assert!(content.contains("_zb_path_append"));
+        assert!(content.contains("_zb_path_prepend()"));
+        assert!(content.contains("for path_entry in $PATH; do"));
+        assert!(content.contains("_zb_path_prepend"));
     }
 
     #[test]
@@ -717,8 +760,8 @@ mod tests {
         add_to_path(&prefix, zerobrew_dir, zerobrew_bin, &root, false).unwrap();
 
         let content = fs::read_to_string(&shell_config).unwrap();
-        assert!(content.contains("_zb_path_append \"$ZEROBREW_BIN\""));
-        assert!(content.contains("_zb_path_append \"$ZEROBREW_PREFIX/bin\""));
+        assert!(content.contains("_zb_path_prepend \"$ZEROBREW_BIN\""));
+        assert!(content.contains("_zb_path_prepend \"$ZEROBREW_PREFIX/bin\""));
     }
 
     #[test]
