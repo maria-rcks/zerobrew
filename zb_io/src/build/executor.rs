@@ -185,6 +185,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
 
     #[tokio::test]
     async fn run_build_supports_mv_in_formula_install() {
@@ -273,6 +274,81 @@ end
         let message = err.to_string();
         assert!(message.contains("source build failed"));
         assert!(message.contains("boom-from-stderr"));
+    }
+
+    #[tokio::test]
+    async fn run_build_supports_utils_safe_popen_read_for_completions() {
+        let Some(ruby) = find_ruby().await.ok() else {
+            return;
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source_root = tmp.path().join("source");
+        std::fs::create_dir_all(source_root.join("bin")).unwrap();
+
+        let depot_bin = source_root.join("bin/depot");
+        std::fs::write(
+            &depot_bin,
+            r#"#!/bin/sh
+if [ "$1" = "completion" ]; then
+  printf "%s completion\n" "$2"
+  exit 0
+fi
+exit 1
+"#,
+        )
+        .unwrap();
+        let mut permissions = std::fs::metadata(&depot_bin).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&depot_bin, permissions).unwrap();
+
+        let shim_path = tmp.path().join("shim.rb");
+        std::fs::write(&shim_path, SHIM_RUBY).unwrap();
+
+        let formula_path = tmp.path().join("depot.rb");
+        std::fs::write(
+            &formula_path,
+            r##"
+class Depot < Formula
+  def install
+    bin.install "bin/depot"
+
+    bash_comp = Utils.safe_popen_read("#{bin}/depot", "completion", "bash")
+    fish_comp = Utils.safe_popen_read("#{bin}/depot", "completion", "fish")
+    zsh_comp = Utils.safe_popen_read("#{bin}/depot", "completion", "zsh")
+
+    (bash_completion/"depot").write bash_comp
+    (fish_completion/"depot.fish").write fish_comp
+    (zsh_completion/"_depot").write zsh_comp
+  end
+end
+"##,
+        )
+        .unwrap();
+
+        let prefix = tmp.path().join("prefix");
+        let cellar = prefix.join("Cellar");
+        std::fs::create_dir_all(&cellar).unwrap();
+        let env = shim_env(&prefix, &cellar, &formula_path, "depot", "2.101.63");
+
+        run_build(&ruby, &shim_path, &source_root, &env)
+            .await
+            .unwrap();
+
+        let keg = prefix.join("Cellar").join("depot").join("2.101.63");
+        assert_eq!(
+            std::fs::read_to_string(keg.join("etc/bash_completion.d/depot")).unwrap(),
+            "bash completion\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(keg.join("share/fish/vendor_completions.d/depot.fish"))
+                .unwrap(),
+            "fish completion\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(keg.join("share/zsh/site-functions/_depot")).unwrap(),
+            "zsh completion\n"
+        );
     }
 
     fn shim_env(
