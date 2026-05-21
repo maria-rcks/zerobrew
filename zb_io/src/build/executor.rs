@@ -217,16 +217,7 @@ end
         let cellar = prefix.join("Cellar");
         std::fs::create_dir_all(&cellar).unwrap();
 
-        let mut env = HashMap::new();
-        env.insert("ZEROBREW_PREFIX".to_string(), prefix.display().to_string());
-        env.insert("ZEROBREW_CELLAR".to_string(), cellar.display().to_string());
-        env.insert("ZEROBREW_FORMULA_NAME".to_string(), "foo".to_string());
-        env.insert("ZEROBREW_FORMULA_VERSION".to_string(), "1.0.0".to_string());
-        env.insert(
-            "ZEROBREW_FORMULA_FILE".to_string(),
-            formula_path.display().to_string(),
-        );
-        env.insert("ZEROBREW_INSTALLED_DEPS".to_string(), "{}".to_string());
+        let env = shim_env(&prefix, &cellar, &formula_path, "foo", "1.0.0");
 
         run_build(&ruby, &shim_path, &source_root, &env)
             .await
@@ -273,16 +264,7 @@ end
         let cellar = prefix.join("Cellar");
         std::fs::create_dir_all(&cellar).unwrap();
 
-        let mut env = HashMap::new();
-        env.insert("ZEROBREW_PREFIX".to_string(), prefix.display().to_string());
-        env.insert("ZEROBREW_CELLAR".to_string(), cellar.display().to_string());
-        env.insert("ZEROBREW_FORMULA_NAME".to_string(), "foo".to_string());
-        env.insert("ZEROBREW_FORMULA_VERSION".to_string(), "1.0.0".to_string());
-        env.insert(
-            "ZEROBREW_FORMULA_FILE".to_string(),
-            formula_path.display().to_string(),
-        );
-        env.insert("ZEROBREW_INSTALLED_DEPS".to_string(), "{}".to_string());
+        let env = shim_env(&prefix, &cellar, &formula_path, "foo", "1.0.0");
 
         let err = run_build(&ruby, &shim_path, &source_root, &env)
             .await
@@ -291,5 +273,31 @@ end
         let message = err.to_string();
         assert!(message.contains("source build failed"));
         assert!(message.contains("boom-from-stderr"));
+    }
+
+    fn shim_env(
+        prefix: &Path,
+        cellar: &Path,
+        formula_path: &Path,
+        formula_name: &str,
+        formula_version: &str,
+    ) -> HashMap<String, String> {
+        HashMap::from([
+            ("ZEROBREW_PREFIX".to_string(), prefix.display().to_string()),
+            ("ZEROBREW_CELLAR".to_string(), cellar.display().to_string()),
+            (
+                "ZEROBREW_FORMULA_NAME".to_string(),
+                formula_name.to_string(),
+            ),
+            (
+                "ZEROBREW_FORMULA_VERSION".to_string(),
+                formula_version.to_string(),
+            ),
+            (
+                "ZEROBREW_FORMULA_FILE".to_string(),
+                formula_path.display().to_string(),
+            ),
+            ("ZEROBREW_INSTALLED_DEPS".to_string(), "{}".to_string()),
+        ])
     }
 }
