@@ -44,6 +44,18 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         return commands::init::execute(&root, &prefix, no_modify_path, &mut ui);
     }
 
+    if let Commands::Shellenv { shell } = cli.command {
+        return commands::shellenv::execute(&root, &prefix, shell);
+    }
+
+    if let Commands::Commands {
+        quiet,
+        include_aliases,
+    } = cli.command
+    {
+        return commands::command_list::execute(quiet, include_aliases);
+    }
+
     if !matches!(cli.command, Commands::Reset { .. }) {
         ensure_init(&root, &prefix, cli.auto_init, &mut ui)?;
     }
@@ -53,6 +65,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
     match cli.command {
         Commands::Init { .. } => unreachable!(),
         Commands::Completion { .. } => unreachable!(),
+        Commands::Commands { .. } => unreachable!(),
+        Commands::Shellenv { .. } => unreachable!(),
         Commands::Install {
             formulas,
             no_link,

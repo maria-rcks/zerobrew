@@ -1,4 +1,5 @@
 pub mod bundle;
+pub mod command_list;
 pub mod completion;
 pub mod doctor;
 pub mod gc;
@@ -10,5 +11,6 @@ pub mod migrate;
 pub mod outdated;
 pub mod reset;
 pub mod run;
+pub mod shellenv;
 pub mod uninstall;
 pub mod update;

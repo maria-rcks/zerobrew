@@ -91,6 +91,27 @@ mod tests {
         let result = Cli::try_parse_from(["zb", "outdated", "--verbose", "--json"]);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn parses_commands_quiet() {
+        let cli = Cli::try_parse_from(["zb", "commands", "--quiet"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Commands {
+                quiet: true,
+                include_aliases: false
+            }
+        ));
+    }
+
+    #[test]
+    fn parses_shellenv_shell_name() {
+        let cli = Cli::try_parse_from(["zb", "shellenv", "fish"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Shellenv { shell: Some(shell) } if shell == "fish"
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -162,6 +183,15 @@ pub enum Commands {
     Completion {
         #[arg(value_enum)]
         shell: clap_complete::shells::Shell,
+    },
+    Commands {
+        #[arg(long, short = 'q')]
+        quiet: bool,
+        #[arg(long, requires = "quiet")]
+        include_aliases: bool,
+    },
+    Shellenv {
+        shell: Option<String>,
     },
     #[command(disable_help_flag = true)]
     Run {
