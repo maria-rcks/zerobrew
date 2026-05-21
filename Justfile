@@ -213,6 +213,12 @@ lint:
 test:
     cargo test --workspace -- --include-ignored
 
+[doc('Run deterministic function-level benchmarks and print fastest/slowest rankings')]
+[group('benchmark')]
+bench-fns:
+    cargo bench -p zb_bench --bench workspace_hotspots
+    cargo run --quiet -p zb_bench -- zb_bench/target/criterion
+
 [doc('Run benchmark comparing zerobrew vs homebrew')]
 [group('benchmark')]
 [positional-arguments]
