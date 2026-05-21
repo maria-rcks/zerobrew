@@ -149,6 +149,28 @@ mod tests {
         let cli = Cli::try_parse_from(["zb", "old"]).unwrap();
         assert!(matches!(cli.command, super::Commands::Outdated { .. }));
     }
+
+    #[test]
+    fn parses_bundle_aliases() {
+        for alias in ["b", "bundle"] {
+            let cli = Cli::try_parse_from(["zb", alias, "i"]).unwrap();
+
+            let super::Commands::Bundle {
+                command: Some(super::BundleCommands::Install { .. }),
+            } = cli.command
+            else {
+                panic!("expected bundle install command for alias {alias}");
+            };
+        }
+
+        let cli = Cli::try_parse_from(["zb", "bundle", "d"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            super::Commands::Bundle {
+                command: Some(super::BundleCommands::Dump { .. })
+            }
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -176,6 +198,7 @@ pub enum Commands {
         #[arg(long)]
         force: bool,
     },
+    #[command(visible_alias = "b")]
     Bundle {
         #[command(subcommand)]
         command: Option<BundleCommands>,
@@ -238,12 +261,14 @@ pub enum Commands {
 
 #[derive(Subcommand)]
 pub enum BundleCommands {
+    #[command(visible_aliases = ["i", "add"])]
     Install {
         #[arg(long, short = 'f', value_name = "FILE", default_value = "Brewfile")]
         file: PathBuf,
         #[arg(long)]
         no_link: bool,
     },
+    #[command(visible_alias = "d")]
     Dump {
         #[arg(long, short = 'f', value_name = "FILE", default_value = "Brewfile")]
         file: PathBuf,
