@@ -49,10 +49,10 @@ pub fn select_bottle(formula: &Formula) -> Result<SelectedBottle, Error> {
     #[cfg(not(target_os = "macos"))]
     let macos_version: Option<u32> = None;
 
-    select_bottle_with_version(formula, macos_version)
+    select_bottle_for_platform(formula, macos_version)
 }
 
-fn select_bottle_with_version(
+pub fn select_bottle_for_platform(
     formula: &Formula,
     macos_version: Option<u32>,
 ) -> Result<SelectedBottle, Error> {
@@ -414,7 +414,7 @@ mod tests {
             variations: None,
         };
 
-        let selected = select_bottle_with_version(&formula, Some(15)).unwrap();
+        let selected = select_bottle_for_platform(&formula, Some(15)).unwrap();
 
         #[cfg(target_arch = "aarch64")]
         assert_eq!(selected.tag, "arm64_sequoia");
@@ -464,7 +464,7 @@ mod tests {
             variations: None,
         };
 
-        let selected = select_bottle_with_version(&formula, Some(26)).unwrap();
+        let selected = select_bottle_for_platform(&formula, Some(26)).unwrap();
 
         #[cfg(target_arch = "aarch64")]
         assert_eq!(selected.tag, "arm64_tahoe");
