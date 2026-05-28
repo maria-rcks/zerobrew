@@ -8,12 +8,26 @@ use zb_cli::cli::Cli;
 use zb_core::formula::{
     Bottle, BottleFile, BottleStable, FormulaUrls, SourceUrl, Versions, formula_token,
 };
-use zb_core::{BuildPlan, Formula, KegOnly, resolve_closure, select_bottle};
+use zb_core::{BuildPlan, Formula, KegOnly, resolve_closure, select_bottle_for_platform};
 use zb_io::network::suggest::rank_formula_suggestions;
 use zb_io::validate_privileged_path;
 
 fn formula(name: &str, deps: &[String], build_deps: &[String]) -> Formula {
     let mut files = BTreeMap::new();
+    files.insert(
+        "arm64_sequoia".to_string(),
+        BottleFile {
+            url: format!("https://example.invalid/{name}.arm64_sequoia.bottle.tar.gz"),
+            sha256: "d".repeat(64),
+        },
+    );
+    files.insert(
+        "sequoia".to_string(),
+        BottleFile {
+            url: format!("https://example.invalid/{name}.sequoia.bottle.tar.gz"),
+            sha256: "e".repeat(64),
+        },
+    );
     files.insert(
         "x86_64_linux".to_string(),
         BottleFile {
@@ -105,8 +119,8 @@ fn bench_core_formula(c: &mut Criterion) {
     }
 
     let formula = formula("openssl@3", &[], &["cmake".to_string()]);
-    group.bench_function("select_bottle", |b| {
-        b.iter(|| select_bottle(black_box(&formula)).unwrap());
+    group.bench_function("select_bottle_for_platform", |b| {
+        b.iter(|| select_bottle_for_platform(black_box(&formula), black_box(Some(15))).unwrap());
     });
 
     group.finish();

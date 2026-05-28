@@ -2,7 +2,7 @@ pub mod bottle;
 pub mod resolve;
 pub mod types;
 
-pub use bottle::{SelectedBottle, compatible_codenames, select_bottle};
+pub use bottle::{SelectedBottle, compatible_codenames, select_bottle, select_bottle_for_platform};
 
 #[cfg(target_os = "macos")]
 pub use bottle::macos_major_version;

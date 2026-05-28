@@ -8,7 +8,7 @@ pub use context::{ConcurrencyLimits, Context, LogLevel, LoggerHandle, Paths};
 pub use errors::{ConflictedLink, Error};
 pub use formula::{
     Formula, KegOnly, KegOnlyReason, SelectedBottle, compatible_codenames, formula_token,
-    resolve_closure, select_bottle,
+    resolve_closure, select_bottle, select_bottle_for_platform,
 };
 
 #[cfg(target_os = "macos")]
