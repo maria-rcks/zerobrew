@@ -26,6 +26,13 @@ use crate::storage::store::Store;
 
 use zb_core::{Error, Formula, InstallMethod};
 
+#[derive(serde::Deserialize)]
+struct FormulaDependentsEntry {
+    name: String,
+    #[serde(default)]
+    dependencies: Vec<String>,
+}
+
 use bottle::dependency_cellar_path;
 
 const MAX_CORRUPTION_RETRIES: usize = 3;
@@ -483,10 +490,11 @@ impl Installer {
     pub async fn formula_dependents(&self, name: &str) -> Result<Vec<String>, Error> {
         let requested = formula_token(name).to_string();
         let bulk_raw = self.api_client.get_all_formulas_raw().await?;
-        let formulas: Vec<Formula> = serde_json::from_str(&bulk_raw)
+        let bulk_values: Vec<serde_json::Value> = serde_json::from_str(&bulk_raw)
             .map_err(Error::network("failed to parse bulk formula JSON"))?;
-        let mut dependents: Vec<String> = formulas
+        let mut dependents: Vec<String> = bulk_values
             .into_iter()
+            .filter_map(|value| serde_json::from_value::<FormulaDependentsEntry>(value).ok())
             .filter_map(|formula| {
                 let depends_on_requested = formula
                     .dependencies
@@ -939,6 +947,78 @@ mod tests {
         let names: Vec<_> = leaves.into_iter().map(|keg| keg.name).collect();
 
         assert_eq!(names, vec!["root"]);
+    }
+
+    #[tokio::test]
+    async fn formula_dependencies_include_build_dependencies_when_requested() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        let formula_json = r#"{
+            "name": "root",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": ["runtime"],
+            "build_dependencies": ["build"],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "all": {
+                            "url": "https://example.com/root.tar.gz",
+                            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                        }
+                    }
+                }
+            }
+        }"#;
+
+        Mock::given(method("GET"))
+            .and(path("/formula/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(formula_json))
+            .mount(&mock_server)
+            .await;
+
+        let dependencies = installer.formula_dependencies("root", false).await.unwrap();
+        let all_dependencies = installer.formula_dependencies("root", true).await.unwrap();
+
+        assert_eq!(dependencies, vec!["runtime"]);
+        assert_eq!(all_dependencies, vec!["build", "runtime"]);
+    }
+
+    #[tokio::test]
+    async fn formula_dependents_skips_malformed_bulk_entries() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        let bulk_json = r#"[
+            { "name": "dependent", "dependencies": ["openssl@3"] },
+            { "name": "other", "dependencies": ["zlib"] },
+            { "name": "tap-dependent", "dependencies": ["homebrew/core/openssl@3"] },
+            { "dependencies": ["openssl@3"] }
+        ]"#;
+
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(bulk_json))
+            .mount(&mock_server)
+            .await;
+
+        let dependents = installer.formula_dependents("openssl@3").await.unwrap();
+
+        assert_eq!(dependents, vec!["dependent", "tap-dependent"]);
     }
 
     #[tokio::test]
