@@ -1,11 +1,28 @@
-pub fn execute(prefix: &std::path::Path, formulas: Vec<String>) -> Result<(), zb_core::Error> {
+pub enum PathKind {
+    Prefix,
+    Cellar,
+}
+
+pub fn execute(
+    prefix: &std::path::Path,
+    formulas: Vec<String>,
+    kind: PathKind,
+) -> Result<(), zb_core::Error> {
     if formulas.is_empty() {
-        println!("{}", prefix.display());
+        let path = match kind {
+            PathKind::Prefix => prefix.to_path_buf(),
+            PathKind::Cellar => prefix.join("Cellar"),
+        };
+        println!("{}", path.display());
         return Ok(());
     }
 
     for formula in formulas {
-        println!("{}", prefix.join("Cellar").join(formula).display());
+        let path = match kind {
+            PathKind::Prefix => prefix.join("opt").join(formula),
+            PathKind::Cellar => prefix.join("Cellar").join(formula),
+        };
+        println!("{}", path.display());
     }
     Ok(())
 }

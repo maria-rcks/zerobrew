@@ -31,6 +31,9 @@ static DEPENDS_ON_RE: LazyLock<Regex> = LazyLock::new(|| {
 static SOURCE_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*url\s+["']([^"']+)["']"#).expect("SOURCE_URL_RE must compile")
 });
+static HOMEPAGE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?m)^\s*homepage\s+["']([^"']+)["']"#).expect("HOMEPAGE_RE must compile")
+});
 static SOURCE_SHA_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*sha256\s+["']([0-9a-f]{64})["']\s*$"#)
         .expect("SOURCE_SHA_RE must compile")
@@ -369,6 +372,7 @@ pub fn parse_tap_formula_ruby(spec: &TapFormulaRef, source: &str) -> Result<Form
 
     Ok(Formula {
         name: spec.formula.clone(),
+        homepage: parse_homepage(&source),
         aliases: Vec::new(),
         versions: Versions { stable },
         dependencies,
@@ -387,6 +391,13 @@ pub fn parse_tap_formula_ruby(spec: &TapFormulaRef, source: &str) -> Result<Form
         requirements: Vec::new(),
         variations: None,
     })
+}
+
+fn parse_homepage(source: &str) -> Option<String> {
+    HOMEPAGE_RE
+        .captures(source)
+        .and_then(|captures| captures.get(1))
+        .map(|match_| match_.as_str().to_string())
 }
 
 fn parse_version(source: &str) -> Option<String> {
@@ -1226,6 +1237,10 @@ end
 
         let formula = parse_tap_formula_ruby(&spec, source).unwrap();
         assert_eq!(formula.name, "sag");
+        assert_eq!(
+            formula.homepage.as_deref(),
+            Some("https://github.com/steipete/sag")
+        );
         assert_eq!(formula.versions.stable, "0.2.2");
 
         let stable = formula

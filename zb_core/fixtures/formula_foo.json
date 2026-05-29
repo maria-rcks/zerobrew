@@ -1,5 +1,6 @@
 {
   "name": "foo",
+  "homepage": "https://example.com/foo",
   "versions": {
     "stable": "1.2.3"
   },
