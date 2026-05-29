@@ -111,6 +111,44 @@ mod tests {
     }
 
     #[test]
+    fn list_accepts_common_homebrew_filter_flags() {
+        let cli = Cli::try_parse_from([
+            "zb",
+            "list",
+            "--formula",
+            "--versions",
+            "--json",
+            "--pinned",
+            "jq",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::List {
+                formulas,
+                formula: true,
+                cask: false,
+                versions: true,
+                json: true,
+                pinned: true,
+            } if formulas == vec!["jq"]
+        ));
+    }
+
+    #[test]
+    fn list_accepts_cask_filter_flag() {
+        let cli = Cli::try_parse_from(["zb", "ls", "--cask"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::List {
+                formula: false,
+                cask: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn info_aliases_accept_common_homebrew_flags() {
         let aliases = ["show", "cat", "desc", "home", "homepage", "uses"];
         for alias in aliases {
@@ -405,7 +443,20 @@ pub enum Commands {
     Leaves,
     /// List installed packages
     #[command(visible_alias = "ls")]
-    List,
+    List {
+        #[arg(num_args = 0.., help = "Packages to list")]
+        formulas: Vec<String>,
+        #[arg(long, help = "List formulae only")]
+        formula: bool,
+        #[arg(long, help = "List casks only")]
+        cask: bool,
+        #[arg(long, help = "Show installed package versions")]
+        versions: bool,
+        #[arg(long, help = "Output as JSON when supported")]
+        json: bool,
+        #[arg(long, help = "List pinned packages when supported")]
+        pinned: bool,
+    },
     /// Show information about a formula
     #[command(visible_aliases = ["show", "cat", "desc", "home", "homepage", "uses"])]
     Info {
