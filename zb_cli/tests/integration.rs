@@ -33,14 +33,6 @@ impl TestEnv {
             .unwrap_or_else(|_| panic!("failed to execute {zb} command"))
     }
 
-    fn zb_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
-        let zb = env!("CARGO_BIN_EXE_zb");
-        let mut cmd = self.zb_command(args);
-        cmd.envs(envs.iter().copied())
-            .output()
-            .unwrap_or_else(|_| panic!("failed to execute {zb} command"))
-    }
-
     fn zb_command(&self, args: &[&str]) -> Command {
         let zb = env!("CARGO_BIN_EXE_zb");
         let mut cmd = Command::new(zb);
@@ -49,7 +41,6 @@ impl TestEnv {
             // and prevent a host-level ZEROBREW_PREFIX from leaking into the test.
             .env("ZEROBREW_PREFIX", self.prefix())
             .env("ZEROBREW_AUTO_INIT", "true")
-            .env_remove("HOMEBREW_VERSION")
             .args(args);
         cmd
     }
@@ -311,22 +302,14 @@ fn test_gc_removes_unused_store_entries() {
 }
 
 #[test]
-fn test_version_uses_homebrew_prefix() {
+fn test_version_uses_zerobrew_binary_name() {
     let t = TestEnv::new();
     let output = t.zb(&["--version"]);
 
     assert_success(&output, "zb --version");
     assert_eq!(
         String::from_utf8_lossy(&output.stdout),
-        format!("Homebrew {}\n", env!("CARGO_PKG_VERSION"))
-    );
-    assert!(output.stderr.is_empty());
-
-    let output = t.zb_with_env(&["--version"], &[("HOMEBREW_VERSION", "5.1.14-test")]);
-    assert_success(&output, "zb --version with HOMEBREW_VERSION");
-    assert_eq!(
-        String::from_utf8_lossy(&output.stdout),
-        "Homebrew 5.1.14-test\n"
+        format!("zb {}\n", env!("CARGO_PKG_VERSION"))
     );
     assert!(output.stderr.is_empty());
 }
