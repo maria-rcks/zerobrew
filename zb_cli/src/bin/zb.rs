@@ -71,9 +71,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formulas,
             no_link,
             build_from_source,
-            force_bottle: _,
-            ignore_dependencies: _,
-            only_dependencies: _,
+            force_bottle,
+            ignore_dependencies,
+            only_dependencies,
             cask,
             formula,
             appdir,
@@ -82,6 +82,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             no_binaries,
             force,
         } => {
+            warn_ignored_install_flags(
+                force_bottle,
+                ignore_dependencies,
+                only_dependencies,
+                &mut ui,
+            )?;
             commands::install::execute(
                 &mut installer,
                 commands::install::InstallRequest {
@@ -115,9 +121,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formulas,
             no_link,
             build_from_source,
-            force_bottle: _,
-            ignore_dependencies: _,
-            only_dependencies: _,
+            force_bottle,
+            ignore_dependencies,
+            only_dependencies,
             cask,
             formula,
             appdir,
@@ -126,6 +132,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             no_binaries,
             force,
         } => {
+            warn_ignored_install_flags(
+                force_bottle,
+                ignore_dependencies,
+                only_dependencies,
+                &mut ui,
+            )?;
             commands::reinstall::execute(
                 &mut installer,
                 commands::reinstall::ReinstallRequest {
@@ -179,9 +191,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             dry_run,
             no_link,
             build_from_source,
-            force_bottle: _,
-            ignore_dependencies: _,
-            only_dependencies: _,
+            force_bottle,
+            ignore_dependencies,
+            only_dependencies,
             cask,
             formula,
             appdir,
@@ -190,6 +202,12 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             no_binaries,
             force,
         } => {
+            warn_ignored_install_flags(
+                force_bottle,
+                ignore_dependencies,
+                only_dependencies,
+                &mut ui,
+            )?;
             commands::upgrade::execute(
                 &mut installer,
                 commands::upgrade::UpgradeRequest {
@@ -222,5 +240,39 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Run { formula, args } => {
             commands::run::execute(&mut installer, formula, args).await
         }
+    }
+}
+
+fn warn_ignored_install_flags(
+    force_bottle: bool,
+    ignore_dependencies: bool,
+    only_dependencies: bool,
+    ui: &mut zb_cli::ui::StdUi,
+) -> Result<(), zb_core::Error> {
+    let mut flags = Vec::new();
+    if force_bottle {
+        flags.push("--force-bottle");
+    }
+    if ignore_dependencies {
+        flags.push("--ignore-dependencies");
+    }
+    if only_dependencies {
+        flags.push("--only-dependencies");
+    }
+
+    if !flags.is_empty() {
+        ui.warn(format!(
+            "{} accepted for Homebrew CLI compatibility but not applied yet",
+            flags.join(", ")
+        ))
+        .map_err(ui_error)?;
+    }
+
+    Ok(())
+}
+
+fn ui_error(err: std::io::Error) -> zb_core::Error {
+    zb_core::Error::StoreCorruption {
+        message: format!("failed to write CLI output: {err}"),
     }
 }
