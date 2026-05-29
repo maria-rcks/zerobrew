@@ -5,6 +5,7 @@ pub mod completion;
 pub mod config;
 pub mod deps;
 pub mod doctor;
+pub mod edit;
 pub mod formulae;
 pub mod gc;
 pub mod home;

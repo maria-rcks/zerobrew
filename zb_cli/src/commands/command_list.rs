@@ -12,6 +12,7 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "config",
     "deps",
     "doctor",
+    "edit",
     "formulae",
     "gc",
     "home",
