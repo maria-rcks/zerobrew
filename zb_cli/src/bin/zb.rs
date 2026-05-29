@@ -173,6 +173,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             json,
             pinned: _,
         } => commands::list::execute(&mut installer, formulas, versions, json),
+        Commands::Formulae { versions } => {
+            commands::formulae::execute(&mut installer, versions).await
+        }
+        Commands::Casks => commands::casks::execute(&mut installer).await,
         Commands::Deps {
             formulas,
             include_build,

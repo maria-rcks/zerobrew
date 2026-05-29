@@ -16,7 +16,7 @@ use zb_core::formula_token;
 
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
-use crate::network::api::ApiClient;
+use crate::network::api::{ApiClient, FormulaIndexEntry};
 use crate::network::cache::ApiCache;
 use crate::network::download::{DownloadProgressCallback, DownloadRequest, ParallelDownloader};
 use crate::progress::{InstallProgress, ProgressCallback};
@@ -39,6 +39,16 @@ struct FormulaDependentsEntry {
 }
 
 use bottle::dependency_cellar_path;
+
+fn formula_index_names(raw: &str) -> Result<Vec<String>, Error> {
+    let mut names: Vec<String> = serde_json::from_str::<Vec<FormulaIndexEntry>>(raw)
+        .map_err(Error::network("failed to parse bulk index JSON"))?
+        .into_iter()
+        .filter_map(|entry| entry.name)
+        .collect();
+    names.sort_unstable();
+    Ok(names)
+}
 
 const MAX_CORRUPTION_RETRIES: usize = 3;
 
@@ -475,6 +485,25 @@ impl Installer {
 
     pub fn list_installed(&self) -> Result<Vec<crate::storage::db::InstalledKeg>, Error> {
         self.db.list_installed()
+    }
+
+    pub async fn list_formula_names(&self) -> Result<Vec<String>, Error> {
+        let raw = self.api_client.get_all_formulas_raw().await?;
+        formula_index_names(&raw)
+    }
+
+    pub async fn list_cask_tokens(&self) -> Result<Vec<String>, Error> {
+        let raw = self.api_client.get_all_casks_raw().await?;
+        formula_index_names(&raw)
+    }
+
+    pub async fn formula_versions(&self, names: &[String]) -> Result<Vec<(String, String)>, Error> {
+        let mut versions = Vec::new();
+        for name in names {
+            let formula = self.api_client.get_formula(name).await?;
+            versions.push((formula.name.clone(), formula.effective_version()));
+        }
+        Ok(versions)
     }
 
     pub async fn formula_dependencies(
@@ -1208,6 +1237,105 @@ mod tests {
             .unwrap();
 
         assert!(missing.is_empty());
+    }
+
+    #[tokio::test]
+    async fn list_formula_names_returns_sorted_bulk_names() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[{"name":"zstd"},{"aliases":["missing-name"]},{"name":"bat"}]"#,
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let names = installer.list_formula_names().await.unwrap();
+
+        assert_eq!(names, vec!["bat", "zstd"]);
+    }
+
+    #[tokio::test]
+    async fn list_cask_tokens_uses_cask_index() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let api_client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_cask_base_url(format!("{}/cask", mock_server.uri()));
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        fs::create_dir_all(root.join("db")).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let installer = Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix,
+            root.join("locks"),
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/cask.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"[{"token":"visual-studio-code"},{"token":"iterm2"}]"#),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let tokens = installer.list_cask_tokens().await.unwrap();
+
+        assert_eq!(tokens, vec!["iterm2", "visual-studio-code"]);
+    }
+
+    #[tokio::test]
+    async fn formula_versions_fetches_effective_versions() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/formula/jq.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{
+                    "name":"jq",
+                    "versions":{"stable":"1.7.1"},
+                    "revision":2,
+                    "dependencies":[],
+                    "bottle":{"stable":{"files":{}}}
+                }"#,
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let versions = installer
+            .formula_versions(&["jq".to_string()])
+            .await
+            .unwrap();
+
+        assert_eq!(versions, vec![("jq".to_string(), "1.7.1_2".to_string())]);
     }
 
     #[tokio::test]

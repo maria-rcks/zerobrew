@@ -59,13 +59,13 @@ enum CachedGetResult {
 }
 
 #[derive(Debug, serde::Deserialize)]
-struct FormulaSuggestionEntry {
+pub(crate) struct FormulaIndexEntry {
+    #[serde(default, alias = "token")]
+    pub(crate) name: Option<String>,
     #[serde(default)]
-    name: Option<String>,
+    pub(crate) aliases: Vec<String>,
     #[serde(default)]
-    aliases: Vec<String>,
-    #[serde(default)]
-    oldnames: Vec<String>,
+    pub(crate) oldnames: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -348,14 +348,22 @@ impl ApiClient {
     }
 
     pub async fn get_all_formulas_raw(&self) -> Result<String, Error> {
-        let url = format!("{}.json", self.base_url);
+        self.get_all_index_raw(&self.base_url, "formula").await
+    }
+
+    pub(crate) async fn get_all_casks_raw(&self) -> Result<String, Error> {
+        self.get_all_index_raw(&self.cask_base_url, "cask").await
+    }
+
+    async fn get_all_index_raw(&self, base_url: &str, kind: &str) -> Result<String, Error> {
+        let url = format!("{base_url}.json");
 
         match self.cached_get(&url).await? {
             CachedGetResult::Cached(body) => Ok(body),
             CachedGetResult::Fresh(response) => {
                 if !response.status().is_success() {
                     return Err(Error::NetworkFailure {
-                        message: format!("bulk formula fetch returned HTTP {}", response.status()),
+                        message: format!("bulk {kind} fetch returned HTTP {}", response.status()),
                     });
                 }
 
@@ -373,7 +381,7 @@ impl ApiClient {
                 let body = response
                     .text()
                     .await
-                    .map_err(Error::network("failed to read bulk formula response body"))?;
+                    .map_err(Error::network("failed to read bulk index response body"))?;
 
                 self.store_response_in_cache(&url, etag, last_modified, &body);
                 Ok(body)
@@ -410,7 +418,7 @@ impl ApiClient {
     fn extract_formula_candidates(raw: &str) -> Result<Vec<String>, Error> {
         use std::collections::HashSet;
 
-        let entries: Vec<FormulaSuggestionEntry> = serde_json::from_str(raw)
+        let entries: Vec<FormulaIndexEntry> = serde_json::from_str(raw)
             .map_err(Error::network("failed to parse bulk formula JSON"))?;
 
         let mut seen = HashSet::new();
@@ -463,7 +471,7 @@ impl ApiClient {
     }
 
     fn extract_alias_map(raw: &str) -> Result<HashMap<String, String>, Error> {
-        let entries: Vec<FormulaSuggestionEntry> = serde_json::from_str(raw)
+        let entries: Vec<FormulaIndexEntry> = serde_json::from_str(raw)
             .map_err(Error::network("failed to parse bulk formula JSON"))?;
 
         let mut map = HashMap::new();
@@ -1243,7 +1251,7 @@ end
 
     #[test]
     fn formula_suggestion_entry_defaults_optional_lists() {
-        let entry: FormulaSuggestionEntry = serde_json::from_str(r#"{"name":"python"}"#).unwrap();
+        let entry: FormulaIndexEntry = serde_json::from_str(r#"{"name":"python"}"#).unwrap();
 
         assert_eq!(entry.name.as_deref(), Some("python"));
         assert!(entry.aliases.is_empty());
