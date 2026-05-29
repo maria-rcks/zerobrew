@@ -121,7 +121,6 @@ bench *args:
                 break
             fi
         fi
-        echo "Hyperfine runs per command: $RUNS" >&2
     done
 
     if [[ "$needs_chown" == "true" ]]; then
@@ -136,6 +135,8 @@ bench *args:
         fi
         echo -e "${GREEN}    Ownership fixed!${NORMAL}" >&2
     fi
+
+    echo "Hyperfine runs per command: $RUNS" >&2
 
     # Determine which packages to test
     # Default: all quick packages (22)
