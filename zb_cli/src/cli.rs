@@ -448,6 +448,17 @@ mod tests {
                 cask: true,
             } if formulas == vec!["iterm2"]
         ));
+
+        let cli = Cli::try_parse_from(["zb", "edit", "testball"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Edit {
+                formulas,
+                formula: false,
+                cask: false,
+                print_path: false,
+            } if formulas == vec!["testball"]
+        ));
     }
 
     #[test]
@@ -975,6 +986,27 @@ pub enum Commands {
         formula: bool,
         #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
         cask: bool,
+    },
+    /// Open formulas, casks, taps or the repository in an editor
+    Edit {
+        #[arg(num_args = 0.., help = "Formula, cask, tap, or file paths")]
+        formulas: Vec<String>,
+        #[arg(
+            long,
+            alias = "formulae",
+            conflicts_with = "cask",
+            help = "Treat named arguments as formulae"
+        )]
+        formula: bool,
+        #[arg(
+            long,
+            alias = "casks",
+            conflicts_with = "formula",
+            help = "Treat named arguments as casks"
+        )]
+        cask: bool,
+        #[arg(long, help = "Print file paths instead of opening an editor")]
+        print_path: bool,
     },
     /// Print formula homepages
     #[command(visible_alias = "homepage")]

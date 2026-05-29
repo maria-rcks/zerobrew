@@ -291,6 +291,15 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formula: _,
             cask: _,
         } => commands::source::execute(&mut installer, formulas).await,
+        Commands::Edit {
+            formulas,
+            formula: _,
+            cask,
+            print_path,
+        } => {
+            commands::edit::execute(&mut installer, &root, formulas, cask, print_path, &mut ui)
+                .await
+        }
         Commands::Home {
             formulas,
             formula: _,
