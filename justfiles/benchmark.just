@@ -223,7 +223,7 @@ bench *args:
         if [[ -n "$LOG_FILE" ]]; then
             printf "%s >> %s 2>&1" "$command" "$(shell_quote "$LOG_FILE")"
         else
-            printf "%s" "$command"
+            printf "%s >/dev/null 2>&1" "$command"
         fi
     }
 
@@ -282,7 +282,7 @@ bench *args:
         echo -e "${CYAN}[$idx/${#PACKAGES[@]}] Testing: $pkg${NORMAL}" >&2
         log_msg "package start: $pkg ($idx/${#PACKAGES[@]})"
 
-        export_json=$(mktemp "${TMPDIR:-/tmp}/zerobrew-hyperfine-${pkg//[^A-Za-z0-9_.-]/_}.XXXXXX.json")
+        export_json=$(mktemp "${TMPDIR:-/tmp}/zerobrew-hyperfine-${pkg//[^A-Za-z0-9_.-]/_}.XXXXXX")
         brew_prepare="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true"
         zb_cold_prepare="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true"
         zb_warm_setup="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true; $(shell_join zb install "$pkg") >/dev/null 2>&1"
