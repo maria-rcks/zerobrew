@@ -552,7 +552,7 @@ impl Installer {
         let targets: Vec<String> = if formulas.is_empty() {
             installed
                 .into_iter()
-                .filter(|keg| !keg.name.starts_with("cask:"))
+                .filter(|keg| !keg.name.starts_with("cask:") && self.installed_keg_exists(keg))
                 .map(|keg| keg.name)
                 .collect()
         } else {
@@ -577,7 +577,7 @@ impl Installer {
                     if hidden_tokens.contains(token) {
                         return true;
                     }
-                    !installed_tokens.contains(token) && self.is_installed(token)
+                    !installed_tokens.contains(token) || !self.is_installed(token)
                 })
                 .collect();
             if !formula_missing.is_empty() {
@@ -1121,21 +1121,6 @@ mod tests {
                 }
             }
         });
-        let missing_dep_json = serde_json::json!({
-            "name": "missing-dep",
-            "versions": { "stable": "1.0.0" },
-            "dependencies": [],
-            "bottle": {
-                "stable": {
-                    "files": {
-                        "x86_64_linux": {
-                            "sha256": "abc123",
-                            "url": "https://example.test/missing-dep.tar.gz"
-                        }
-                    }
-                }
-            }
-        });
 
         Mock::given(method("GET"))
             .and(path("/formula/root.json"))
@@ -1147,32 +1132,30 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_json(dep_json))
             .mount(&mock_server)
             .await;
-        Mock::given(method("GET"))
-            .and(path("/formula/missing-dep.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(missing_dep_json))
-            .mount(&mock_server)
-            .await;
 
         let tx = installer.db.transaction().unwrap();
         tx.record_install("root", "1.0.0", "root-key").unwrap();
         tx.record_install("dep", "1.0.0", "dep-key").unwrap();
-        tx.record_install("missing-dep", "1.0.0", "missing-key")
-            .unwrap();
         tx.commit().unwrap();
         fs::create_dir_all(installer.keg_path("root", "1.0.0")).unwrap();
         fs::create_dir_all(installer.keg_path("dep", "1.0.0")).unwrap();
-        fs::create_dir_all(installer.keg_path("missing-dep", "1.0.0")).unwrap();
 
-        let no_missing = installer.missing_dependencies(&[], &[]).await.unwrap();
+        let missing = installer.missing_dependencies(&[], &[]).await.unwrap();
         let hidden_missing = installer
             .missing_dependencies(&["root".to_string()], &["dep".to_string()])
             .await
             .unwrap();
 
-        assert!(no_missing.is_empty());
+        assert_eq!(
+            missing,
+            vec![("root".to_string(), vec!["missing-dep".to_string()])]
+        );
         assert_eq!(
             hidden_missing,
-            vec![("root".to_string(), vec!["dep".to_string()])]
+            vec![(
+                "root".to_string(),
+                vec!["dep".to_string(), "missing-dep".to_string()]
+            )]
         );
     }
 
