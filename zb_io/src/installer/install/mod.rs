@@ -24,6 +24,7 @@ use crate::storage::blob::BlobCache;
 use crate::storage::db::Database;
 use crate::storage::store::Store;
 
+use zb_core::formula::UsesFromMacos;
 use zb_core::{Error, Formula, InstallMethod};
 
 #[derive(serde::Deserialize)]
@@ -33,6 +34,8 @@ struct FormulaDependentsEntry {
     dependencies: Vec<String>,
     #[serde(default)]
     build_dependencies: Vec<String>,
+    #[serde(default)]
+    uses_from_macos: Vec<UsesFromMacos>,
 }
 
 use bottle::dependency_cellar_path;
@@ -507,10 +510,14 @@ impl Installer {
                     .iter()
                     .any(|dependency| formula_token(dependency) == requested);
                 let build_match = include_build
-                    && formula
+                    && (formula
                         .build_dependencies
                         .iter()
-                        .any(|dependency| formula_token(dependency) == requested);
+                        .any(|dependency| formula_token(dependency) == requested)
+                        || formula
+                            .uses_from_macos
+                            .iter()
+                            .any(|dependency| formula_token(dependency.name()) == requested));
                 (runtime_match || build_match).then_some(formula.name)
             })
             .collect();
@@ -1016,6 +1023,7 @@ mod tests {
 
         let bulk_json = r#"[
             { "name": "build-dependent", "build_dependencies": ["openssl@3"] },
+            { "name": "macos-dependent", "uses_from_macos": ["openssl@3"] },
             { "name": "dependent", "dependencies": ["openssl@3"] },
             { "name": "other", "dependencies": ["zlib"] },
             { "name": "tap-dependent", "dependencies": ["homebrew/core/openssl@3"] },
@@ -1040,7 +1048,12 @@ mod tests {
         assert_eq!(dependents, vec!["dependent", "tap-dependent"]);
         assert_eq!(
             all_dependents,
-            vec!["build-dependent", "dependent", "tap-dependent"]
+            vec![
+                "build-dependent",
+                "dependent",
+                "macos-dependent",
+                "tap-dependent"
+            ]
         );
     }
 
