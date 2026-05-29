@@ -1,9 +1,11 @@
 pub mod bundle;
+pub mod casks;
 pub mod command_list;
 pub mod completion;
 pub mod config;
 pub mod deps;
 pub mod doctor;
+pub mod formulae;
 pub mod gc;
 pub mod info;
 pub mod init;

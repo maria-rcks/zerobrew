@@ -355,6 +355,15 @@ mod tests {
     }
 
     #[test]
+    fn formulae_and_casks_commands_parse_homebrew_forms() {
+        let cli = Cli::try_parse_from(["zb", "formulae", "--versions"]).unwrap();
+        assert!(matches!(cli.command, Commands::Formulae { versions: true }));
+
+        let cli = Cli::try_parse_from(["zb", "casks"]).unwrap();
+        assert!(matches!(cli.command, Commands::Casks));
+    }
+
+    #[test]
     fn outdated_accepts_common_homebrew_filter_flags() {
         let cli = Cli::try_parse_from([
             "zb",
@@ -545,6 +554,14 @@ pub enum Commands {
         #[arg(long, help = "List pinned packages when supported")]
         pinned: bool,
     },
+
+    /// List all locally installable formulae
+    Formulae {
+        #[arg(long, help = "Show formula versions")]
+        versions: bool,
+    },
+    /// List all locally installable casks
+    Casks,
     /// Show dependencies for formulas
     Deps {
         #[arg(required = true, num_args = 1.., help = "Formula names to inspect")]
