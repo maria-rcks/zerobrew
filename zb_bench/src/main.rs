@@ -341,9 +341,9 @@ fn encoded_column(parts: &[&str]) -> String {
 
 fn zero_percent() -> ConfidenceInterval {
     ConfidenceInterval {
-        estimate: 1.0,
-        lower_bound: 1.0,
-        upper_bound: 1.0,
+        estimate: 0.0,
+        lower_bound: 0.0,
+        upper_bound: 0.0,
         unit: "%".to_string(),
     }
 }
