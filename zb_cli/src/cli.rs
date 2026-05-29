@@ -62,7 +62,7 @@ fn parse_concurrency(value: &str) -> Result<usize, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::Cli;
+    use super::{Cli, Commands};
     use clap::Parser;
 
     #[test]
@@ -109,6 +109,123 @@ mod tests {
         let result = Cli::try_parse_from(["zb", "outdated", "--verbose", "--json"]);
         assert!(result.is_err());
     }
+
+    #[test]
+    fn info_aliases_accept_common_homebrew_flags() {
+        let aliases = ["show", "cat", "desc", "home", "homepage", "uses"];
+        for alias in aliases {
+            let cli = Cli::try_parse_from([
+                "zb",
+                alias,
+                "--installed",
+                "--eval-all",
+                "--analytics",
+                "--json",
+                "jq",
+            ])
+            .unwrap_or_else(|err| panic!("{alias} failed to parse: {err}"));
+            assert!(matches!(
+                cli.command,
+                Commands::Info {
+                    formula,
+                    installed: true,
+                    eval_all: true,
+                    analytics: true,
+                    json: true,
+                } if formula == "jq"
+            ));
+        }
+    }
+
+    #[test]
+    fn install_reinstall_and_upgrade_accept_common_homebrew_flags() {
+        let commands = ["install", "reinstall", "upgrade"];
+        for command in commands {
+            let cli = Cli::try_parse_from([
+                "zb",
+                command,
+                "--force-bottle",
+                "--ignore-dependencies",
+                "--only-dependencies",
+                "jq",
+            ])
+            .unwrap_or_else(|err| panic!("{command} failed to parse: {err}"));
+            assert!(matches!(
+                cli.command,
+                Commands::Install {
+                    force_bottle: true,
+                    ignore_dependencies: true,
+                    only_dependencies: true,
+                    ..
+                } | Commands::Reinstall {
+                    force_bottle: true,
+                    ignore_dependencies: true,
+                    only_dependencies: true,
+                    ..
+                } | Commands::Upgrade {
+                    force_bottle: true,
+                    ignore_dependencies: true,
+                    only_dependencies: true,
+                    ..
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn search_accepts_common_homebrew_filter_flags() {
+        let cli = Cli::try_parse_from([
+            "zb",
+            "search",
+            "--installed",
+            "--eval-all",
+            "--json",
+            "--desc",
+            "json",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Search {
+                installed: true,
+                eval_all: true,
+                json: true,
+                desc: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn outdated_accepts_common_homebrew_filter_flags() {
+        let cli = Cli::try_parse_from([
+            "zb",
+            "outdated",
+            "--formula",
+            "--cask",
+            "--fetch-head",
+            "--pinned",
+            "--unpinned",
+            "--greedy",
+            "--greedy-auto-updates",
+            "--greedy-latest",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Outdated {
+                formula: true,
+                cask: true,
+                fetch_head: true,
+                pinned: true,
+                unpinned: true,
+                greedy: true,
+                greedy_auto_updates: true,
+                greedy_latest: true,
+                ..
+            }
+        ));
+    }
 }
 
 #[derive(Subcommand)]
@@ -122,6 +239,12 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's', help = "Build from source instead of using bottles")]
         build_from_source: bool,
+        #[arg(long, help = "Install from bottles only")]
+        force_bottle: bool,
+        #[arg(long, help = "Ignore dependencies when installing formulas")]
+        ignore_dependencies: bool,
+        #[arg(long, help = "Install only missing dependencies")]
+        only_dependencies: bool,
         #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
         cask: bool,
         #[arg(long, conflicts_with = "cask", help = "Treat packages as formulas")]
@@ -180,6 +303,12 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's', help = "Build from source instead of using bottles")]
         build_from_source: bool,
+        #[arg(long, help = "Install from bottles only")]
+        force_bottle: bool,
+        #[arg(long, help = "Ignore dependencies when installing formulas")]
+        ignore_dependencies: bool,
+        #[arg(long, help = "Install only missing dependencies")]
+        only_dependencies: bool,
         #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
         cask: bool,
         #[arg(long, conflicts_with = "cask", help = "Treat packages as formulas")]
@@ -206,6 +335,12 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's', help = "Build from source instead of using bottles")]
         build_from_source: bool,
+        #[arg(long, help = "Install from bottles only")]
+        force_bottle: bool,
+        #[arg(long, help = "Ignore dependencies when installing formulas")]
+        ignore_dependencies: bool,
+        #[arg(long, help = "Install only missing dependencies")]
+        only_dependencies: bool,
         #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
         cask: bool,
         #[arg(long, conflicts_with = "cask", help = "Treat packages as formulas")]
@@ -239,11 +374,19 @@ pub enum Commands {
     /// List installed packages
     #[command(visible_alias = "ls")]
     List,
-    /// Show information about an installed package
-    #[command(visible_alias = "show")]
+    /// Show information about a formula
+    #[command(visible_aliases = ["show", "cat", "desc", "home", "homepage", "uses"])]
     Info {
-        #[arg(help = "Name of the installed package")]
+        #[arg(help = "Name of the formula")]
         formula: String,
+        #[arg(long, help = "Show installed formula information only")]
+        installed: bool,
+        #[arg(long, help = "Also evaluate all formulae when supported")]
+        eval_all: bool,
+        #[arg(long, help = "Show analytics information when supported")]
+        analytics: bool,
+        #[arg(long, help = "Output as JSON when supported")]
+        json: bool,
     },
     /// Run diagnostics and optionally repair issues
     #[command(visible_alias = "check")]
@@ -291,6 +434,14 @@ pub enum Commands {
         formula: bool,
         #[arg(long, conflicts_with = "formula", help = "Search casks only")]
         cask: bool,
+        #[arg(long, help = "Include installed formulae when supported")]
+        installed: bool,
+        #[arg(long, help = "Also evaluate all formulae when supported")]
+        eval_all: bool,
+        #[arg(long, help = "Output as JSON when supported")]
+        json: bool,
+        #[arg(long, help = "Show formula descriptions when supported")]
+        desc: bool,
     },
     /// Run an installed formula as a command
     #[command(disable_help_flag = true)]
@@ -308,6 +459,22 @@ pub enum Commands {
     Outdated {
         #[arg(long, conflicts_with_all = ["quiet", "verbose"], help = "Output as JSON")]
         json: bool,
+        #[arg(long, help = "Include formulae when checking outdated packages")]
+        formula: bool,
+        #[arg(long, help = "Include casks when checking outdated packages")]
+        cask: bool,
+        #[arg(long, help = "Fetch the latest package metadata before checking")]
+        fetch_head: bool,
+        #[arg(long, help = "Include pinned packages when supported")]
+        pinned: bool,
+        #[arg(long, help = "Ignore pinned packages when supported")]
+        unpinned: bool,
+        #[arg(long, help = "Show outdated dependency information when supported")]
+        greedy: bool,
+        #[arg(long, help = "Show auto-updated casks when supported")]
+        greedy_auto_updates: bool,
+        #[arg(long, help = "Show latest-version casks when supported")]
+        greedy_latest: bool,
     },
 }
 
