@@ -1368,15 +1368,18 @@ mod tests {
         let source = "class Testball < Formula\nend\n";
         Mock::given(method("GET"))
             .and(path("/formula/testball.json"))
-            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
-                r#"{{
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{
                     "name":"testball",
-                    "versions":{{"stable":"0.1"}},
+                    "versions":{"stable":"0.1"},
                     "dependencies":[],
-                    "bottle":{{"stable":{{"files":{{}}}}}},
+                    "bottle":{"stable":{"files":{}}},
                     "ruby_source_path":"Formula/t/testball.rb"
-                }}"#
-            )))
+                }"#
+                    .to_string(),
+                ),
+            )
             .mount(&mock_server)
             .await;
         Mock::given(method("GET"))
