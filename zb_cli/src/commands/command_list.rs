@@ -29,8 +29,9 @@ const BUILT_IN_COMMANDS: &[&str] = &[
 ];
 
 const COMMAND_ALIASES: &[&str] = &[
-    "add", "b", "cfg", "check", "clean", "cmds", "env", "find", "i", "leaf", "ln", "ls", "old",
-    "prune", "re", "remove", "rm", "show", "ug", "unln", "up",
+    "add", "b", "cat", "cfg", "check", "clean", "cmds", "desc", "env", "find", "home", "homepage",
+    "i", "leaf", "ln", "ls", "old", "prune", "re", "remove", "rm", "show", "ug", "unln", "up",
+    "uses",
 ];
 
 pub fn execute(quiet: bool, include_aliases: bool) -> Result<(), zb_core::Error> {
