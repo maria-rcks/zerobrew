@@ -534,7 +534,7 @@ impl Installer {
     pub fn get_installed(&self, name: &str) -> Option<crate::storage::db::InstalledKeg> {
         self.db
             .get_installed(name)
-            .or_else(|| self.installed_keg_from_cellar(name))
+            .or_else(|| self.installed_keg_from_cellar_fallback(name))
     }
 
     pub fn list_installed(&self) -> Result<Vec<crate::storage::db::InstalledKeg>, Error> {
@@ -805,9 +805,28 @@ impl Installer {
         Some(crate::storage::db::InstalledKeg {
             name: name.to_string(),
             version,
-            store_key: String::new(),
+            store_key: "cellar-only".to_string(),
             installed_at: 0,
         })
+    }
+
+    fn installed_keg_from_cellar_fallback(
+        &self,
+        name: &str,
+    ) -> Option<crate::storage::db::InstalledKeg> {
+        if !installed_name_can_fall_back_to_cellar(name) {
+            return None;
+        }
+        let token_is_registered_to_another_name = self
+            .db
+            .list_installed()
+            .ok()?
+            .iter()
+            .any(|installed| formula_token(&installed.name) == name);
+        if token_is_registered_to_another_name {
+            return None;
+        }
+        self.installed_keg_from_cellar(name)
     }
 
     fn cleanup_materialized(cellar: &Cellar, name: &str, version: &str) {
@@ -820,6 +839,10 @@ impl Installer {
             );
         }
     }
+}
+
+fn installed_name_can_fall_back_to_cellar(name: &str) -> bool {
+    !name.starts_with("cask:") && !name.contains('/')
 }
 
 fn default_app_dir() -> PathBuf {

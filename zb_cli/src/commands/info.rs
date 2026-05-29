@@ -5,13 +5,17 @@ pub fn execute(installer: &mut zb_io::Installer, formula: String) -> Result<(), 
     if let Some(keg) = installer.get_installed(&formula) {
         print_field("Name:", style(&keg.name).bold());
         print_field("Version:", &keg.version);
-        print_field("Store key:", &keg.store_key[..12]);
+        print_field("Store key:", store_key_prefix(&keg.store_key));
         print_field("Installed:", format_timestamp(keg.installed_at));
     } else {
         println!("Formula '{}' is not installed.", formula);
     }
 
     Ok(())
+}
+
+fn store_key_prefix(store_key: &str) -> &str {
+    &store_key[..store_key.len().min(12)]
 }
 
 fn print_field(label: &str, value: impl std::fmt::Display) {
@@ -46,5 +50,20 @@ fn format_timestamp(timestamp: i64) -> String {
             }
         }
         None => "invalid timestamp".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::store_key_prefix;
+
+    #[test]
+    fn store_key_prefix_handles_short_keys() {
+        assert_eq!(store_key_prefix("cellar-only"), "cellar-only");
+    }
+
+    #[test]
+    fn store_key_prefix_truncates_long_keys() {
+        assert_eq!(store_key_prefix("1234567890abcdef"), "1234567890ab");
     }
 }

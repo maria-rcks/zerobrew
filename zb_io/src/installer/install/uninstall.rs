@@ -8,9 +8,10 @@ use super::bottle::{
 
 impl Installer {
     pub fn uninstall(&mut self, name: &str) -> Result<(), Error> {
-        let installed = self.db.get_installed(name).ok_or(Error::NotInstalled {
+        let installed = self.get_installed(name).ok_or(Error::NotInstalled {
             name: name.to_string(),
         })?;
+        let database_record_exists = self.db.get_installed(name).is_some();
         let keg_name = formula_token(&installed.name);
 
         let keg_path = self.cellar.keg_path(keg_name, &installed.version);
@@ -22,7 +23,9 @@ impl Installer {
 
         {
             let tx = self.db.transaction()?;
-            tx.record_uninstall(name)?;
+            if database_record_exists {
+                tx.record_uninstall(name)?;
+            }
             tx.commit()?;
         }
 
