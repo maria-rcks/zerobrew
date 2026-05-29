@@ -49,6 +49,7 @@ impl TestEnv {
             // and prevent a host-level ZEROBREW_PREFIX from leaking into the test.
             .env("ZEROBREW_PREFIX", self.prefix())
             .env("ZEROBREW_AUTO_INIT", "true")
+            .env_remove("HOMEBREW_VERSION")
             .args(args);
         cmd
     }
