@@ -155,8 +155,64 @@ mod tests {
     }
 
     #[test]
+    fn deps_accepts_common_homebrew_flags() {
+        let cli = Cli::try_parse_from([
+            "zb",
+            "deps",
+            "--include-build",
+            "--include-test",
+            "--skip-recommended",
+            "--tree",
+            "--prune",
+            "--missing",
+            "--eval-all",
+            "--recursive",
+            "jq",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Deps {
+                formulas,
+                include_build: true,
+                include_test: true,
+                skip_recommended: true,
+                tree: true,
+                prune: true,
+                missing: true,
+                eval_all: true,
+                recursive: true,
+            } if formulas == vec!["jq"]
+        ));
+    }
+
+    #[test]
+    fn uses_accepts_common_homebrew_flags() {
+        let cli = Cli::try_parse_from([
+            "zb",
+            "uses",
+            "--eval-all",
+            "--include-optional",
+            "--missing",
+            "--recursive",
+            "openssl@3",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Uses {
+                formulas,
+                eval_all: true,
+                include_optional: true,
+                missing: true,
+                recursive: true,
+            } if formulas == vec!["openssl@3"]
+        ));
+    }
+
+    #[test]
     fn info_aliases_accept_common_homebrew_flags() {
-        let aliases = ["show", "cat", "desc", "home", "homepage", "uses"];
+        let aliases = ["show", "cat", "desc", "home", "homepage"];
         for alias in aliases {
             let cli = Cli::try_parse_from([
                 "zb",
@@ -463,8 +519,45 @@ pub enum Commands {
         #[arg(long, help = "List pinned packages when supported")]
         pinned: bool,
     },
+    /// Show dependencies for formulas
+    Deps {
+        #[arg(required = true, num_args = 1.., help = "Formula names to inspect")]
+        formulas: Vec<String>,
+        #[arg(long, help = "Include build dependencies when supported")]
+        include_build: bool,
+        #[arg(long, help = "Include test dependencies when supported")]
+        include_test: bool,
+        #[arg(long, help = "Skip recommended dependencies when supported")]
+        skip_recommended: bool,
+        #[arg(long, help = "Show dependencies as a tree when supported")]
+        tree: bool,
+        #[arg(
+            long,
+            help = "Prune repeated dependencies in tree output when supported"
+        )]
+        prune: bool,
+        #[arg(long, help = "Only show missing dependencies when supported")]
+        missing: bool,
+        #[arg(long, help = "Also evaluate all formulae when supported")]
+        eval_all: bool,
+        #[arg(long, help = "Resolve dependencies recursively when supported")]
+        recursive: bool,
+    },
+    /// Show formulas that depend on the given formulas
+    Uses {
+        #[arg(required = true, num_args = 1.., help = "Formula names to inspect")]
+        formulas: Vec<String>,
+        #[arg(long, help = "Also evaluate all formulae when supported")]
+        eval_all: bool,
+        #[arg(long, help = "Include optional dependencies when supported")]
+        include_optional: bool,
+        #[arg(long, help = "Only show missing dependents when supported")]
+        missing: bool,
+        #[arg(long, help = "Resolve dependents recursively when supported")]
+        recursive: bool,
+    },
     /// Show information about a formula
-    #[command(visible_aliases = ["show", "cat", "desc", "home", "homepage", "uses"])]
+    #[command(visible_aliases = ["show", "cat", "desc", "home", "homepage"])]
     Info {
         #[arg(help = "Name of the formula")]
         formula: String,
