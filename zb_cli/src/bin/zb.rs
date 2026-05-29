@@ -1,4 +1,3 @@
-use clap::Parser;
 use console::style;
 use zb_cli::{
     cli::{Cli, Commands},
@@ -56,6 +55,19 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         return commands::command_list::execute(quiet, include_aliases);
     }
 
+    if let Commands::Prefix {
+        formulas,
+        installed: _,
+        unbrewed: _,
+    } = cli.command
+    {
+        return commands::prefix::execute(&prefix, formulas, commands::prefix::PathKind::Prefix);
+    }
+
+    if let Commands::Cellar { formulas } = cli.command {
+        return commands::prefix::execute(&prefix, formulas, commands::prefix::PathKind::Cellar);
+    }
+
     if !matches!(cli.command, Commands::Reset { .. }) {
         ensure_init(&root, &prefix, cli.auto_init, &mut ui)?;
     }
@@ -67,6 +79,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Completion { .. } => unreachable!(),
         Commands::Commands { .. } => unreachable!(),
         Commands::Shellenv { .. } => unreachable!(),
+        Commands::Prefix { .. } => unreachable!(),
+        Commands::Cellar { .. } => unreachable!(),
         Commands::Install {
             formulas,
             no_link,
@@ -266,14 +280,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         } => {
             commands::options::execute();
             Ok(())
-        }
-        Commands::Prefix {
-            formulas,
-            installed: _,
-            unbrewed: _,
-        } => commands::prefix::execute(&prefix, formulas, commands::prefix::PathKind::Prefix),
-        Commands::Cellar { formulas } => {
-            commands::prefix::execute(&prefix, formulas, commands::prefix::PathKind::Cellar)
         }
         Commands::Cat {
             formulas,
