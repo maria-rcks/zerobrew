@@ -4,6 +4,7 @@ zerobrew has two benchmark layers:
 
 - `just bench` compares end-to-end install behavior against Homebrew using Hyperfine. It depends on local Brew/zerobrew state and is best for release checks.
 - `just bench-fns` runs deterministic function-level benchmarks across `zb_core`, `zb_io`, and `zb_cli`. It is the right starting point when looking for slow internal code paths to hand off for optimization.
+- `just bench-fns-table` prints the current Criterion results as GitHub Flavored Markdown tables for PRs and performance notes.
 
 ## Function-Level Benchmarks
 
@@ -14,6 +15,14 @@ just bench-fns
 ```
 
 The recipe runs the Criterion suite in `zb_bench/benches/workspace_hotspots.rs`, then reads the generated Criterion `**/new/estimates.json` files and prints the slowest and fastest benchmarked functions by mean time. The slowest list is intended to become the optimization backlog.
+
+For a Markdown report:
+
+```sh
+just bench-fns-table
+```
+
+This renders the existing Criterion output through `criterion-table`, so it expects fresh benchmark data from `just bench-fns`.
 
 The current suite covers representative hot paths from every crate:
 

@@ -4,6 +4,11 @@ bench-fns:
     cargo bench -p zb_bench --bench workspace_hotspots
     cargo run --quiet -p zb_bench
 
+[doc('Run deterministic function-level benchmarks and print GitHub Markdown tables')]
+[group('benchmark')]
+bench-fns-table:
+    cargo run --quiet -p zb_bench -- --table
+
 [doc('Run benchmark comparing zerobrew vs homebrew')]
 [group('benchmark')]
 [positional-arguments]
