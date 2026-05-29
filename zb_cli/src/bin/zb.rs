@@ -277,14 +277,14 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             cask: _,
         } => commands::pin::execute(formulas),
         Commands::Options {
-            formulas: _,
-            compact: _,
-            installed: _,
+            formulas,
+            compact,
+            installed,
             eval_all: _,
-            command: _,
+            command,
         } => {
-            commands::options::execute();
-            Ok(())
+            commands::options::execute(&mut installer, &root, formulas, compact, installed, command)
+                .await
         }
         Commands::Cat {
             formulas,
