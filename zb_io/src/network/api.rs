@@ -60,7 +60,7 @@ enum CachedGetResult {
 
 #[derive(Debug, serde::Deserialize)]
 pub(crate) struct FormulaIndexEntry {
-    #[serde(default, alias = "token")]
+    #[serde(default)]
     pub(crate) name: Option<String>,
     #[serde(default)]
     pub(crate) aliases: Vec<String>,
