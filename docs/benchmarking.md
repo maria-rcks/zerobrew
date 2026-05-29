@@ -2,7 +2,7 @@
 
 zerobrew has two benchmark layers:
 
-- `just bench` compares end-to-end install behavior against Homebrew. It depends on local Brew/zerobrew state and is best for release checks.
+- `just bench` compares end-to-end install behavior against Homebrew using Hyperfine. It depends on local Brew/zerobrew state and is best for release checks.
 - `just bench-fns` runs deterministic function-level benchmarks across `zb_core`, `zb_io`, and `zb_cli`. It is the right starting point when looking for slow internal code paths to hand off for optimization.
 
 ## Function-Level Benchmarks
@@ -22,6 +22,24 @@ The current suite covers representative hot paths from every crate:
 - `zb_cli`: common CLI parse paths.
 
 All inputs are local and synthetic, so the suite should avoid network, Homebrew state, and filesystem layout dependencies.
+
+## End-to-End Install Benchmarks
+
+Run:
+
+```sh
+just bench --quick
+```
+
+The recipe uses Hyperfine to time three commands for every selected package:
+
+1. `brew install <package>`
+2. `zb install <package>` after `zb reset -y` for a cold zerobrew cache
+3. `zb install <package>` after a priming install and uninstall for a warm zerobrew cache
+
+Use `-c, --count N` to control both the selected package count and Hyperfine run count. For example, `just bench --quick -c 3` benchmarks the first three quick packages with three Hyperfine runs per command. `--dry-run` prints the selected packages and output settings without running Hyperfine.
+
+The default output is zerobrew's summary table. `--format json`, `--format csv`, `--format html`, or `--output <file>` keep the existing report formats while Hyperfine provides the timing measurements.
 
 ## Adding A Hotspot
 
