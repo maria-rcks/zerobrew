@@ -176,21 +176,46 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Deps {
             formulas,
             include_build,
-            include_test: _,
-            skip_recommended: _,
-            tree: _,
-            prune: _,
-            missing: _,
-            eval_all: _,
-            recursive: _,
-        } => commands::deps::execute(&mut installer, formulas, include_build).await,
+            include_test,
+            skip_recommended,
+            tree,
+            prune,
+            missing,
+            eval_all,
+            recursive,
+        } => {
+            warn_ignored_flags(
+                &[
+                    (include_test, "--include-test"),
+                    (skip_recommended, "--skip-recommended"),
+                    (tree, "--tree"),
+                    (prune, "--prune"),
+                    (missing, "--missing"),
+                    (eval_all, "--eval-all"),
+                    (recursive, "--recursive"),
+                ],
+                &mut ui,
+            )?;
+            commands::deps::execute(&mut installer, formulas, include_build).await
+        }
         Commands::Uses {
             formulas,
-            eval_all: _,
-            include_optional: _,
-            missing: _,
-            recursive: _,
-        } => commands::uses::execute(&mut installer, formulas).await,
+            eval_all,
+            include_optional,
+            missing,
+            recursive,
+        } => {
+            warn_ignored_flags(
+                &[
+                    (eval_all, "--eval-all"),
+                    (include_optional, "--include-optional"),
+                    (missing, "--missing"),
+                    (recursive, "--recursive"),
+                ],
+                &mut ui,
+            )?;
+            commands::uses::execute(&mut installer, formulas).await
+        }
         Commands::Info {
             formula,
             installed: _,
@@ -277,21 +302,29 @@ fn warn_ignored_install_flags(
     only_dependencies: bool,
     ui: &mut zb_cli::ui::StdUi,
 ) -> Result<(), zb_core::Error> {
-    let mut flags = Vec::new();
-    if force_bottle {
-        flags.push("--force-bottle");
-    }
-    if ignore_dependencies {
-        flags.push("--ignore-dependencies");
-    }
-    if only_dependencies {
-        flags.push("--only-dependencies");
-    }
+    warn_ignored_flags(
+        &[
+            (force_bottle, "--force-bottle"),
+            (ignore_dependencies, "--ignore-dependencies"),
+            (only_dependencies, "--only-dependencies"),
+        ],
+        ui,
+    )
+}
 
-    if !flags.is_empty() {
+fn warn_ignored_flags(
+    flags: &[(bool, &'static str)],
+    ui: &mut zb_cli::ui::StdUi,
+) -> Result<(), zb_core::Error> {
+    let ignored: Vec<_> = flags
+        .iter()
+        .filter_map(|(enabled, flag)| enabled.then_some(*flag))
+        .collect();
+
+    if !ignored.is_empty() {
         ui.warn(format!(
             "{} accepted for Homebrew CLI compatibility but not applied yet",
-            flags.join(", ")
+            ignored.join(", ")
         ))
         .map_err(ui_error)?;
     }
