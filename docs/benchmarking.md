@@ -37,7 +37,9 @@ The recipe uses Hyperfine to time three commands for every selected package:
 2. `zb install <package>` after `zb reset -y` for a cold zerobrew cache
 3. `zb install <package>` after a priming install and uninstall for a warm zerobrew cache
 
-Use `-c, --count N` to control both the selected package count and Hyperfine run count. For example, `just bench --quick -c 3` benchmarks the first three quick packages with three Hyperfine runs per command. `--dry-run` prints the selected packages and output settings without running Hyperfine.
+Use `-c, --count N` to limit the selected package list, and `--runs N` to set the Hyperfine run count per command. For example, `just bench --quick -c 3 --runs 5` benchmarks the first three quick packages with five Hyperfine runs per command. `--dry-run` prints the selected packages, output settings, and run count without running Hyperfine.
+
+The Homebrew benchmark uses Homebrew's normal download cache between Hyperfine runs. This reflects repeat install performance on a typical developer machine rather than a forced first-download benchmark.
 
 The default output is zerobrew's summary table. `--format json`, `--format csv`, `--format html`, or `--output <file>` keep the existing report formats while Hyperfine provides the timing measurements.
 

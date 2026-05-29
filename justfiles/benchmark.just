@@ -16,6 +16,7 @@ bench *args:
     FORMAT=""
     OUTPUT=""
     COUNT=""
+    RUNS=3
     QUICK=true
     FULL=false
     FULL_OUTPUT_DIR=""
@@ -29,6 +30,7 @@ bench *args:
         case $1 in
             --format)  need_arg "$1" "$2"; FORMAT="$2"; shift 2 ;;
             -c|--count)   need_arg "$1" "$2"; COUNT="$2"; shift 2 ;;
+            --runs)    need_arg "$1" "$2"; RUNS="$2"; shift 2 ;;
             --quick)   QUICK=true; FULL=false; shift ;;
             --full)    FULL=true; QUICK=false;
                        # Check if next arg is a directory path (not a flag)
@@ -51,6 +53,7 @@ bench *args:
                 echo "                       Optionally specify DIR to output all formats to directory"
                 echo "  -c, --count N        Test first N packages from selected list"
                 echo "                       (quick packages by default, or from --full list)"
+                echo "  --runs N             Hyperfine runs per command (default: 3)"
                 echo "  --format FORMAT      Output format: text (default), json, csv, or html"
                 echo "  -o, --output FILE    Write output to file instead of stdout (format inferred from extension)"
                 echo "  --no-color           Disable colored output"
@@ -75,6 +78,7 @@ bench *args:
     fi
 
     [[ "$FORMAT" =~ ^(text|json|csv|html)$ ]] || { echo "Error: format must be text, json, csv, or html" >&2; exit 1; }
+    [[ "$RUNS" =~ ^[1-9][0-9]*$ ]] || { echo "Error: --runs must be a positive integer" >&2; exit 1; }
 
     # Pre-run validation
     missing=()
@@ -117,6 +121,7 @@ bench *args:
                 break
             fi
         fi
+        echo "Hyperfine runs per command: $RUNS" >&2
     done
 
     if [[ "$needs_chown" == "true" ]]; then
@@ -200,8 +205,6 @@ bench *args:
         echo "  3. zb install <package> (warm cache)" >&2
         exit 0
     fi
-
-    RUNS="${COUNT:-1}"
 
     shell_quote() {
         printf "%q" "$1"
