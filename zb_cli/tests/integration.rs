@@ -28,15 +28,29 @@ impl TestEnv {
 
     fn zb(&self, args: &[&str]) -> Output {
         let zb = env!("CARGO_BIN_EXE_zb");
-        Command::new(zb)
-            .env("ZEROBREW_ROOT", self.root.path())
+        let mut cmd = self.zb_command(args);
+        cmd.output()
+            .unwrap_or_else(|_| panic!("failed to execute {zb} command"))
+    }
+
+    fn zb_with_env(&self, args: &[&str], envs: &[(&str, &str)]) -> Output {
+        let zb = env!("CARGO_BIN_EXE_zb");
+        let mut cmd = self.zb_command(args);
+        cmd.envs(envs.iter().copied())
+            .output()
+            .unwrap_or_else(|_| panic!("failed to execute {zb} command"))
+    }
+
+    fn zb_command(&self, args: &[&str]) -> Command {
+        let zb = env!("CARGO_BIN_EXE_zb");
+        let mut cmd = Command::new(zb);
+        cmd.env("ZEROBREW_ROOT", self.root.path())
             // Use the short prefix so Mach-O patching stays within the 13-char limit,
             // and prevent a host-level ZEROBREW_PREFIX from leaking into the test.
             .env("ZEROBREW_PREFIX", self.prefix())
             .env("ZEROBREW_AUTO_INIT", "true")
-            .args(args)
-            .output()
-            .unwrap_or_else(|_| panic!("failed to execute {zb} command"))
+            .args(args);
+        cmd
     }
 
     fn bin_dir(&self) -> PathBuf {
@@ -293,4 +307,25 @@ fn test_gc_removes_unused_store_entries() {
 
     assert_success(&t.zb(&["gc"]), "zb gc");
     assert_eq!(t.count_store_entries(), 0);
+}
+
+#[test]
+fn test_version_uses_homebrew_prefix() {
+    let t = TestEnv::new();
+    let output = t.zb(&["--version"]);
+
+    assert_success(&output, "zb --version");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        format!("Homebrew {}\n", env!("CARGO_PKG_VERSION"))
+    );
+    assert!(output.stderr.is_empty());
+
+    let output = t.zb_with_env(&["--version"], &[("HOMEBREW_VERSION", "5.1.14-test")]);
+    assert_success(&output, "zb --version with HOMEBREW_VERSION");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout),
+        "Homebrew 5.1.14-test\n"
+    );
+    assert!(output.stderr.is_empty());
 }

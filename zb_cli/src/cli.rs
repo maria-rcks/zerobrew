@@ -4,7 +4,6 @@ use std::{ffi::OsString, path::PathBuf};
 #[derive(Parser)]
 #[command(name = "zb")]
 #[command(about = "Zerobrew - A fast Homebrew-compatible package installer")]
-#[command(version)]
 #[command(subcommand_precedence_over_arg = true)]
 pub struct Cli {
     #[arg(long, env = "ZEROBREW_ROOT", help = "Path to zerobrew data directory")]
