@@ -542,6 +542,7 @@ impl Installer {
         let installed = self.db.list_installed()?;
         let installed_tokens: HashSet<_> = installed
             .iter()
+            .filter(|keg| !keg.name.starts_with("cask:") && self.installed_keg_exists(keg))
             .map(|keg| formula_token(&keg.name).to_string())
             .collect();
         let hidden_tokens: HashSet<_> = hidden
@@ -564,20 +565,12 @@ impl Installer {
             if !self.is_installed(&formula) {
                 return Err(Error::NotInstalled { name: formula });
             }
-            let formula_name_token = formula_token(&formula).to_string();
-            if hidden_tokens.contains(&formula_name_token) {
-                continue;
-            }
-
             let dependencies = self.formula_dependencies(&formula, false).await?;
             let formula_missing: Vec<String> = dependencies
                 .into_iter()
                 .filter(|dependency| {
                     let token = formula_token(dependency);
-                    if hidden_tokens.contains(token) {
-                        return true;
-                    }
-                    !installed_tokens.contains(token) || !self.is_installed(token)
+                    hidden_tokens.contains(token) || !installed_tokens.contains(token)
                 })
                 .collect();
             if !formula_missing.is_empty() {
@@ -1157,6 +1150,56 @@ mod tests {
                 vec!["dep".to_string(), "missing-dep".to_string()]
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn missing_dependencies_handles_tap_qualified_installs() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        let root_json = serde_json::json!({
+            "name": "root",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": ["dep"],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "x86_64_linux": {
+                            "sha256": "abc123",
+                            "url": "https://example.test/root.tar.gz"
+                        }
+                    }
+                }
+            }
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/formula/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(root_json))
+            .mount(&mock_server)
+            .await;
+
+        let tx = installer.db.transaction().unwrap();
+        tx.record_install("root", "1.0.0", "root-key").unwrap();
+        tx.record_install("hashicorp/tap/dep", "1.0.0", "dep-key")
+            .unwrap();
+        tx.commit().unwrap();
+        fs::create_dir_all(installer.keg_path("root", "1.0.0")).unwrap();
+        fs::create_dir_all(installer.keg_path("dep", "1.0.0")).unwrap();
+
+        let missing = installer
+            .missing_dependencies(&["root".to_string()], &[])
+            .await
+            .unwrap();
+
+        assert!(missing.is_empty());
     }
 
     #[tokio::test]
