@@ -460,6 +460,7 @@ mod tests {
                 "--force-bottle",
                 "--ignore-dependencies",
                 "--only-dependencies",
+                "--ask",
                 "jq",
             ])
             .unwrap_or_else(|err| panic!("{command} failed to parse: {err}"));
@@ -469,16 +470,19 @@ mod tests {
                     force_bottle: true,
                     ignore_dependencies: true,
                     only_dependencies: true,
+                    ask: true,
                     ..
                 } | Commands::Reinstall {
                     force_bottle: true,
                     ignore_dependencies: true,
                     only_dependencies: true,
+                    ask: true,
                     ..
                 } | Commands::Upgrade {
                     force_bottle: true,
                     ignore_dependencies: true,
                     only_dependencies: true,
+                    ask: true,
                     ..
                 }
             ));
@@ -491,6 +495,7 @@ mod tests {
             "--force-bottle",
             "--ignore-dependencies",
             "--only-dependencies",
+            "--ask",
         ];
         for flag in flags {
             for command in ["install", "reinstall", "upgrade"] {
@@ -598,6 +603,8 @@ pub enum Commands {
         ignore_dependencies: bool,
         #[arg(long, help = "Install only missing dependencies")]
         only_dependencies: bool,
+        #[arg(long, help = "Ask before installing formulae")]
+        ask: bool,
         #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
         cask: bool,
         #[arg(long, conflicts_with = "cask", help = "Treat packages as formulas")]
@@ -662,6 +669,8 @@ pub enum Commands {
         ignore_dependencies: bool,
         #[arg(long, help = "Install only missing dependencies")]
         only_dependencies: bool,
+        #[arg(long, help = "Ask before reinstalling formulae")]
+        ask: bool,
         #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
         cask: bool,
         #[arg(long, conflicts_with = "cask", help = "Treat packages as formulas")]
@@ -694,6 +703,8 @@ pub enum Commands {
         ignore_dependencies: bool,
         #[arg(long, help = "Install only missing dependencies")]
         only_dependencies: bool,
+        #[arg(long, help = "Ask before upgrading formulae")]
+        ask: bool,
         #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
         cask: bool,
         #[arg(long, conflicts_with = "cask", help = "Treat packages as formulas")]
