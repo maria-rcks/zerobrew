@@ -153,7 +153,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 force_bottle,
                 ignore_dependencies,
                 only_dependencies,
-                ask,
+                false,
                 &mut ui,
             )?;
             commands::reinstall::execute(
@@ -162,6 +162,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     formulas,
                     no_link,
                     build_from_source,
+                    ask,
                     cask,
                     formula,
                     appdir,

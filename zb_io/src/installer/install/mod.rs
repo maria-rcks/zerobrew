@@ -527,13 +527,14 @@ impl Installer {
     }
 
     pub fn is_installed(&self, name: &str) -> bool {
-        self.db
-            .get_installed(name)
+        self.get_installed(name)
             .is_some_and(|installed| self.installed_keg_exists(&installed))
     }
 
     pub fn get_installed(&self, name: &str) -> Option<crate::storage::db::InstalledKeg> {
-        self.db.get_installed(name)
+        self.db
+            .get_installed(name)
+            .or_else(|| self.installed_keg_from_cellar(name))
     }
 
     pub fn list_installed(&self) -> Result<Vec<crate::storage::db::InstalledKeg>, Error> {
@@ -789,6 +790,24 @@ impl Installer {
         self.cellar
             .keg_path(formula_token(&installed.name), &installed.version)
             .exists()
+    }
+
+    fn installed_keg_from_cellar(&self, name: &str) -> Option<crate::storage::db::InstalledKeg> {
+        let token = formula_token(name);
+        let version = self
+            .cellar
+            .list_kegs()
+            .ok()?
+            .into_iter()
+            .find(|keg| keg.name == token)?
+            .version;
+
+        Some(crate::storage::db::InstalledKeg {
+            name: name.to_string(),
+            version,
+            store_key: String::new(),
+            installed_at: 0,
+        })
     }
 
     fn cleanup_materialized(cellar: &Cellar, name: &str, version: &str) {
@@ -2382,5 +2401,19 @@ end
         );
 
         assert!(!installer.is_installed("cask:stale"));
+    }
+
+    #[test]
+    fn is_installed_detects_cellar_keg_without_database_record() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = create_local_installer(&root, &prefix);
+
+        fs::create_dir_all(prefix.join("Cellar/testball/0.1")).unwrap();
+
+        assert!(installer.is_installed("testball"));
+        let installed = installer.get_installed("testball").unwrap();
+        assert_eq!(installed.version, "0.1");
     }
 }

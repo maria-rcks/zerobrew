@@ -7,6 +7,7 @@ pub struct ReinstallRequest {
     pub formulas: Vec<String>,
     pub no_link: bool,
     pub build_from_source: bool,
+    pub ask: bool,
     pub cask: bool,
     pub formula: bool,
     pub appdir: Option<PathBuf>,
@@ -41,6 +42,13 @@ pub async fn execute(
     }
 
     for name in names {
+        if request.ask {
+            ui.println(format!("Would reinstall 1 formula:\n    {name}"))
+                .map_err(ui_error)?;
+        } else {
+            ui.println(format!("Reinstalling {name}"))
+                .map_err(ui_error)?;
+        }
         installer.uninstall(&name)?;
         install::execute(
             installer,
@@ -62,4 +70,10 @@ pub async fn execute(
     }
 
     Ok(())
+}
+
+fn ui_error(err: std::io::Error) -> zb_core::Error {
+    zb_core::Error::FileError {
+        message: format!("failed to write CLI output: {err}"),
+    }
 }
