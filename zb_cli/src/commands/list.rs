@@ -1,13 +1,48 @@
 use console::style;
 
-pub fn execute(installer: &mut zb_io::Installer) -> Result<(), zb_core::Error> {
+pub fn execute(
+    installer: &mut zb_io::Installer,
+    formulas: Vec<String>,
+    versions: bool,
+    json: bool,
+) -> Result<(), zb_core::Error> {
     let installed = installer.list_installed()?;
+    let installed: Vec<_> = if formulas.is_empty() {
+        installed
+    } else {
+        installed
+            .into_iter()
+            .filter(|keg| formulas.iter().any(|formula| formula == &keg.name))
+            .collect()
+    };
+
+    if json {
+        let packages: Vec<serde_json::Value> = installed
+            .iter()
+            .map(|keg| {
+                if versions {
+                    serde_json::json!({
+                        "name": keg.name,
+                        "versions": [keg.version],
+                    })
+                } else {
+                    serde_json::json!(keg.name)
+                }
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&packages).unwrap());
+        return Ok(());
+    }
 
     if installed.is_empty() {
         println!("No formulas installed.");
     } else {
         for keg in installed {
-            println!("{} {}", style(&keg.name).bold(), style(&keg.version).dim());
+            if versions {
+                println!("{} {}", keg.name, keg.version);
+            } else {
+                println!("{}", style(&keg.name).bold());
+            }
         }
     }
 
