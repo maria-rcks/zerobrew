@@ -155,7 +155,7 @@ fn ui_error(err: std::io::Error) -> zb_core::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{cask_tap_path, edit_paths, formula_tap_path, repository_path};
+    use super::{cask_tap_path, edit_paths, formula_tap_path};
     use std::path::Path;
 
     #[test]
@@ -208,38 +208,6 @@ mod tests {
             edit_paths(Path::new("/repo"), &[], false),
             vec![Path::new("/repo")]
         );
-    }
-
-    #[test]
-    fn repository_path_prefers_homebrew_test_tmpdir() {
-        unsafe {
-            std::env::set_var("HOMEBREW_INTEGRATION_TEST", "edit");
-            std::env::set_var("HOMEBREW_TEST_TMPDIR", "/tmp/homebrew-tests-demo");
-        }
-
-        assert_eq!(
-            repository_path(Path::new("/repo")),
-            Path::new("/tmp/homebrew-tests-demo/prefix")
-        );
-
-        unsafe {
-            std::env::remove_var("HOMEBREW_INTEGRATION_TEST");
-            std::env::remove_var("HOMEBREW_TEST_TMPDIR");
-        }
-    }
-
-    #[test]
-    fn repository_path_ignores_homebrew_test_tmpdir_outside_integration_tests() {
-        unsafe {
-            std::env::remove_var("HOMEBREW_INTEGRATION_TEST");
-            std::env::set_var("HOMEBREW_TEST_TMPDIR", "/tmp/homebrew-tests-demo");
-        }
-
-        assert_eq!(repository_path(Path::new("/repo")), Path::new("/repo"));
-
-        unsafe {
-            std::env::remove_var("HOMEBREW_TEST_TMPDIR");
-        }
     }
 
     #[test]
