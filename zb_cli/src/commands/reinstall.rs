@@ -45,10 +45,10 @@ pub async fn execute(
         if request.ask {
             ui.println(format!("Would reinstall 1 formula:\n    {name}"))
                 .map_err(ui_error)?;
-        } else {
-            ui.println(format!("Reinstalling {name}"))
-                .map_err(ui_error)?;
+            continue;
         }
+        ui.println(format!("Reinstalling {name}"))
+            .map_err(ui_error)?;
         installer.uninstall(&name)?;
         install::execute(
             installer,
