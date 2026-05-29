@@ -80,6 +80,7 @@ bench *args:
     missing=()
     command -v brew &>/dev/null || missing+=("brew")
     command -v zb &>/dev/null || missing+=("zb")
+    command -v hyperfine &>/dev/null || missing+=("hyperfine")
     command -v python3 &>/dev/null || missing+=("python3")
     command -v bc &>/dev/null || missing+=("bc")
     command -v sed &>/dev/null || missing+=("sed")
@@ -200,37 +201,75 @@ bench *args:
         exit 0
     fi
 
-    # Portable timing using python3 (works on macOS + Linux)
-    get_time() { python3 -c "import time; print(time.time())"; }
-    elapsed_ms() { python3 -c "print(int((float('$2') - float('$1')) * 1000))"; }
+    RUNS="${COUNT:-1}"
 
-    # Safer command execution using argv array
-    # Usage: run_timed_install "label" cmd arg1 arg2 ...
-    run_timed_install() {
-        local label="$1"
-        shift
-        echo -e "  ${YELLOW}-> $label...${NORMAL}" >&2
-        local start=$(get_time)
-        local status=0
+    shell_quote() {
+        printf "%q" "$1"
+    }
+
+    shell_join() {
+        local out=""
+        for arg in "$@"; do
+            if [[ -n "$out" ]]; then
+                out+=" "
+            fi
+            out+="$(shell_quote "$arg")"
+        done
+        printf "%s" "$out"
+    }
+
+    append_log_redirect() {
+        local command="$1"
         if [[ -n "$LOG_FILE" ]]; then
-            log_msg "START $label: $*"
-            "$@" >> "$LOG_FILE" 2>&1
-            status=$?
+            printf "%s >> %s 2>&1" "$command" "$(shell_quote "$LOG_FILE")"
         else
-            "$@" > /dev/null 2>&1
-            status=$?
+            printf "%s" "$command"
         fi
+    }
 
-        if [[ $status -eq 0 ]]; then
-            local elapsed
-            elapsed=$(elapsed_ms "$start" "$(get_time)")
-            log_msg "END $label: ${elapsed}ms"
-            echo "$elapsed"
-            return 0
+    run_hyperfine_install() {
+        local package="$1"
+        local export_json="$2"
+        shift 2
+
+        local names=()
+        local prepares=()
+        local commands=()
+
+        while [[ $# -gt 0 ]]; do
+            names+=("$1")
+            prepares+=("$2")
+            commands+=("$3")
+            shift 3
+        done
+
+        local args=(--runs "$RUNS" --warmup 0 --time-unit millisecond --style basic --export-json "$export_json")
+        [[ "$NO_COLOR" == "true" ]] && args=(--runs "$RUNS" --warmup 0 --time-unit millisecond --style nocolor --export-json "$export_json")
+
+        for name in "${names[@]}"; do
+            args+=(-n "$name")
+        done
+        for prepare in "${prepares[@]}"; do
+            args+=(--prepare "$prepare")
+        done
+        for command in "${commands[@]}"; do
+            args+=("$command")
+        done
+
+        echo -e "  ${YELLOW}-> Hyperfine: $package...${NORMAL}" >&2
+        log_msg "hyperfine start: $package"
+        if [[ -n "$LOG_FILE" ]]; then
+            hyperfine "${args[@]}" >> "$LOG_FILE" 2>&1
+        else
+            hyperfine "${args[@]}" >&2
         fi
+        local status=$?
+        log_msg "hyperfine end: $package status=$status"
+        return "$status"
+    }
 
-        log_msg "FAIL $label (exit $status)"
-        return 1
+    mean_ms_from_json() {
+        python3 -c 'import json, sys; data = json.load(open(sys.argv[1], encoding="utf-8")); command = sys.argv[2]; matches = [result for result in data.get("results", []) if result.get("command") == command]; print(int(round(float(matches[0]["mean"]) * 1000))) if matches else sys.exit(f"missing hyperfine command: {command}")' "$1" "$2"
     }
 
     declare -a NAMES=() BREW_TIMES=() ZB_COLD_TIMES=() ZB_WARM_TIMES=() SPEEDUPS_COLD=() SPEEDUPS_WARM=() FAILED_NAMES=() FAILED_REASONS=()
@@ -243,46 +282,32 @@ bench *args:
         echo -e "${CYAN}[$idx/${#PACKAGES[@]}] Testing: $pkg${NORMAL}" >&2
         log_msg "package start: $pkg ($idx/${#PACKAGES[@]})"
 
-        brew uninstall --ignore-dependencies "$pkg" &>/dev/null || true
-        zb uninstall "$pkg" &>/dev/null || true
-        zb reset -y &>/dev/null || true
+        export_json=$(mktemp "${TMPDIR:-/tmp}/zerobrew-hyperfine-${pkg//[^A-Za-z0-9_.-]/_}.XXXXXX.json")
+        brew_prepare="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true"
+        zb_cold_prepare="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true"
+        zb_warm_setup="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true; $(shell_join zb install "$pkg") >/dev/null 2>&1"
+        zb_warm_prepare="$(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $zb_warm_setup"
 
-        if BREW_MS=$(run_timed_install "Homebrew" brew install "$pkg"); then
-            echo -e "    ${GREEN}OK: $(format_duration "$BREW_MS")${NORMAL}" >&2
+        brew_cmd=$(append_log_redirect "$(shell_join brew install "$pkg")")
+        zb_cmd=$(append_log_redirect "$(shell_join zb install "$pkg")")
+
+        if run_hyperfine_install "$pkg" "$export_json"             "Homebrew" "$brew_prepare" "$brew_cmd"             "Zerobrew (cold)" "$zb_cold_prepare" "$zb_cmd"             "Zerobrew (warm)" "$zb_warm_prepare" "$zb_cmd"; then
+            BREW_MS=$(mean_ms_from_json "$export_json" "Homebrew")
+            ZB_COLD_MS=$(mean_ms_from_json "$export_json" "Zerobrew (cold)")
+            ZB_WARM_MS=$(mean_ms_from_json "$export_json" "Zerobrew (warm)")
+            echo -e "    Homebrew: ${GREEN}$(format_duration "$BREW_MS")${NORMAL}" >&2
+            echo -e "    ZB cold:  ${GREEN}$(format_duration "$ZB_COLD_MS")${NORMAL}" >&2
+            echo -e "    ZB warm:  ${GREEN}$(format_duration "$ZB_WARM_MS")${NORMAL}" >&2
         else
             echo -e "    ${RED}FAILED${NORMAL}" >&2
             FAILED_NAMES+=("$pkg")
-            FAILED_REASONS+=("brew install failed")
-            ((FAILED++)) || true  # || true needed because ((0++)) returns exit 1
-            log_msg "package fail: $pkg (brew install failed)"
+            FAILED_REASONS+=("hyperfine benchmark failed")
+            ((FAILED++)) || true
+            log_msg "package fail: $pkg (hyperfine failed)"
+            rm -f "$export_json"
             continue
         fi
-
-        brew uninstall --ignore-dependencies "$pkg" &>/dev/null || true
-
-        zb reset -y &>/dev/null || true
-        if ZB_COLD_MS=$(run_timed_install "Zerobrew (cold)" zb install "$pkg"); then
-            echo -e "    ${GREEN}OK: $(format_duration "$ZB_COLD_MS")${NORMAL}" >&2
-        else
-            echo -e "    ${RED}FAILED${NORMAL}" >&2
-            FAILED_NAMES+=("$pkg")
-            FAILED_REASONS+=("zb install failed (cold)")
-            ((FAILED++)) || true  # || true needed because ((0++)) returns exit 1
-            log_msg "package fail: $pkg (zb install failed cold)"
-            continue
-        fi
-
-        zb uninstall "$pkg" &>/dev/null || true
-        if ZB_WARM_MS=$(run_timed_install "Zerobrew (warm)" zb install "$pkg"); then
-            echo -e "    ${GREEN}OK: $(format_duration "$ZB_WARM_MS")${NORMAL}" >&2
-        else
-            echo -e "    ${RED}FAILED${NORMAL}" >&2
-            FAILED_NAMES+=("$pkg")
-            FAILED_REASONS+=("zb install failed (warm)")
-            ((FAILED++)) || true  # || true needed because ((0++)) returns exit 1
-            log_msg "package fail: $pkg (zb install failed warm)"
-            continue
-        fi
+        rm -f "$export_json"
 
         SPEEDUP_COLD=$( [[ $ZB_COLD_MS -gt 0 ]] && echo "scale=2; $BREW_MS / $ZB_COLD_MS" | bc -l | sed 's/^\./0./' || echo "0" )
         SPEEDUP_WARM=$( [[ $ZB_WARM_MS -gt 0 ]] && echo "scale=2; $BREW_MS / $ZB_WARM_MS" | bc -l | sed 's/^\./0./' || echo "0" )
