@@ -484,11 +484,18 @@ impl Installer {
     ) -> Result<Vec<String>, Error> {
         let formula = self.api_client.get_formula(name).await?;
         let mut dependencies = formula.dependencies.clone();
+        #[cfg(not(target_os = "macos"))]
+        dependencies.extend(
+            formula
+                .uses_from_macos
+                .iter()
+                .map(|dep| dep.name().to_string()),
+        );
         if include_build {
-            dependencies.extend(formula.all_build_dependencies());
-            dependencies.sort_unstable();
-            dependencies.dedup();
+            dependencies.extend(formula.build_dependencies.iter().cloned());
         }
+        dependencies.sort_unstable();
+        dependencies.dedup();
         Ok(dependencies)
     }
 
@@ -509,15 +516,17 @@ impl Installer {
                     .dependencies
                     .iter()
                     .any(|dependency| formula_token(dependency) == requested);
+                #[cfg(not(target_os = "macos"))]
+                let runtime_match = runtime_match
+                    || formula
+                        .uses_from_macos
+                        .iter()
+                        .any(|dependency| formula_token(dependency.name()) == requested);
                 let build_match = include_build
-                    && (formula
+                    && formula
                         .build_dependencies
                         .iter()
-                        .any(|dependency| formula_token(dependency) == requested)
-                        || formula
-                            .uses_from_macos
-                            .iter()
-                            .any(|dependency| formula_token(dependency.name()) == requested));
+                        .any(|dependency| formula_token(dependency) == requested);
                 (runtime_match || build_match).then_some(formula.name)
             })
             .collect();
@@ -984,6 +993,7 @@ mod tests {
             "versions": { "stable": "1.0.0" },
             "dependencies": ["runtime"],
             "build_dependencies": ["build"],
+            "uses_from_macos": ["macos-runtime"],
             "bottle": {
                 "stable": {
                     "files": {
@@ -1005,8 +1015,14 @@ mod tests {
         let dependencies = installer.formula_dependencies("root", false).await.unwrap();
         let all_dependencies = installer.formula_dependencies("root", true).await.unwrap();
 
+        #[cfg(target_os = "macos")]
         assert_eq!(dependencies, vec!["runtime"]);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(dependencies, vec!["macos-runtime", "runtime"]);
+        #[cfg(target_os = "macos")]
         assert_eq!(all_dependencies, vec!["build", "runtime"]);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(all_dependencies, vec!["build", "macos-runtime", "runtime"]);
     }
 
     #[tokio::test]
@@ -1045,7 +1061,19 @@ mod tests {
             .await
             .unwrap();
 
+        #[cfg(target_os = "macos")]
         assert_eq!(dependents, vec!["dependent", "tap-dependent"]);
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(
+            dependents,
+            vec!["dependent", "macos-dependent", "tap-dependent"]
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            all_dependents,
+            vec!["build-dependent", "dependent", "tap-dependent"]
+        );
+        #[cfg(not(target_os = "macos"))]
         assert_eq!(
             all_dependents,
             vec![
