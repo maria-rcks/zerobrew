@@ -17,6 +17,7 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "link",
     "list",
     "migrate",
+    "missing",
     "outdated",
     "reinstall",
     "reset",

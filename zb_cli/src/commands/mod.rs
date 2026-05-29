@@ -12,6 +12,7 @@ pub mod leaves;
 pub mod link;
 pub mod list;
 pub mod migrate;
+pub mod missing;
 pub mod outdated;
 pub mod reinstall;
 pub mod reset;
