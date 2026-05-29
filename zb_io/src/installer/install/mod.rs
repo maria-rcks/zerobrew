@@ -24,7 +24,7 @@ use crate::storage::blob::BlobCache;
 use crate::storage::db::Database;
 use crate::storage::store::Store;
 
-use zb_core::formula::{UsesFromMacos, Versions};
+use zb_core::formula::{UsesFromMacos, Versions, effective_version};
 use zb_core::{Error, Formula, InstallMethod};
 
 #[derive(serde::Deserialize)]
@@ -50,12 +50,7 @@ impl FormulaIndexVersionEntry {
     fn into_version(self) -> Option<(String, String)> {
         let name = self.name?;
         let stable = self.versions?.stable;
-        let version = if self.revision > 0 {
-            format!("{}_{}", stable, self.revision)
-        } else {
-            stable
-        };
-        Some((name, version))
+        Some((name, effective_version(&stable, self.revision)))
     }
 }
 
@@ -580,6 +575,10 @@ impl Installer {
         dependencies.sort_unstable();
         dependencies.dedup();
         Ok(dependencies)
+    }
+
+    pub async fn formula_metadata(&self, name: &str) -> Result<Formula, Error> {
+        self.api_client.get_formula(name).await
     }
 
     pub async fn formula_dependents(

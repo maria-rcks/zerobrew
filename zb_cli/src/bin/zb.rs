@@ -247,6 +247,42 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             greedy_auto_updates: _,
             greedy_latest: _,
         } => commands::outdated::execute(&mut installer, cli.quiet, cli.verbose > 0, json).await,
+        Commands::Pin {
+            formulas,
+            formula: _,
+            cask: _,
+        }
+        | Commands::Unpin {
+            formulas,
+            formula: _,
+            cask: _,
+        } => commands::pin::execute(formulas),
+        Commands::Options {
+            formulas: _,
+            compact: _,
+            installed: _,
+            eval_all: _,
+            command: _,
+        } => {
+            commands::options::execute();
+            Ok(())
+        }
+        Commands::Prefix {
+            formulas,
+            installed: _,
+            unbrewed: _,
+        }
+        | Commands::Cellar { formulas } => commands::prefix::execute(&prefix, formulas),
+        Commands::Cat {
+            formulas,
+            formula: _,
+            cask: _,
+        } => commands::source::execute(&mut installer, formulas).await,
+        Commands::Home {
+            formulas,
+            formula: _,
+            cask: _,
+        } => commands::home::execute(&mut installer, formulas).await,
         Commands::Upgrade {
             formulas,
             dry_run,

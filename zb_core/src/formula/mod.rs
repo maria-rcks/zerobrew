@@ -9,7 +9,7 @@ pub use bottle::macos_major_version;
 pub use resolve::resolve_closure;
 pub use types::{
     Bottle, BottleFile, BottleStable, Formula, FormulaUrls, KegOnly, KegOnlyReason,
-    RubySourceChecksum, SourceUrl, UsesFromMacos, Versions,
+    RubySourceChecksum, SourceUrl, UsesFromMacos, Versions, effective_version,
 };
 
 /// Extract the formula token from an install key.
