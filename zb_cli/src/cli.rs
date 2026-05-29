@@ -132,6 +132,7 @@ mod tests {
                     eval_all: true,
                     analytics: true,
                     json: true,
+                    show_versions: false,
                 } if formula == "jq"
             ));
         }
@@ -188,6 +189,18 @@ mod tests {
     }
 
     #[test]
+    fn info_accepts_common_homebrew_output_flags() {
+        let cli = Cli::try_parse_from(["zb", "info", "--versions", "jq"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Info {
+                show_versions: true,
+                ..
+            }
+        ));
+    }
+
+    #[test]
     fn search_accepts_common_homebrew_filter_flags() {
         let cli = Cli::try_parse_from([
             "zb",
@@ -196,6 +209,8 @@ mod tests {
             "--eval-all",
             "--json",
             "--desc",
+            "--name",
+            "--all",
             "json",
         ])
         .unwrap();
@@ -206,6 +221,8 @@ mod tests {
                 eval_all: true,
                 json: true,
                 desc: true,
+                name: true,
+                all: true,
                 ..
             }
         ));
@@ -402,6 +419,8 @@ pub enum Commands {
         analytics: bool,
         #[arg(long, help = "Output as JSON when supported")]
         json: bool,
+        #[arg(long = "versions", help = "Show package versions when supported")]
+        show_versions: bool,
     },
     /// Run diagnostics and optionally repair issues
     #[command(visible_alias = "check")]
@@ -457,6 +476,10 @@ pub enum Commands {
         json: bool,
         #[arg(long, help = "Show formula descriptions when supported")]
         desc: bool,
+        #[arg(long, help = "Search package names when supported")]
+        name: bool,
+        #[arg(long, help = "Search all package metadata when supported")]
+        all: bool,
     },
     /// Run an installed formula as a command
     #[command(disable_help_flag = true)]
