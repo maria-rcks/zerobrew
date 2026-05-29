@@ -121,6 +121,7 @@ mod tests {
 
         Formula {
             name: name.to_string(),
+            homepage: None,
             aliases: Vec::new(),
             versions: Versions {
                 stable: "1.0.0".to_string(),

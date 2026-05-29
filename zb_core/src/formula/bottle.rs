@@ -228,6 +228,7 @@ mod tests {
 
         let formula = Formula {
             name: "ca-certificates".to_string(),
+            homepage: None,
             aliases: Vec::new(),
             versions: Versions {
                 stable: "2024-01-01".to_string(),
