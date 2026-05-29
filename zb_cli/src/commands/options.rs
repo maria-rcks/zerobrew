@@ -5,8 +5,7 @@ use regex::Regex;
 use std::path::Path;
 
 static OPTION_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r#"(?m)^\s*option\s+["']([^"']+)["']\s*,\s*["']([^"']+)["']"#)
-        .expect("OPTION_RE must compile")
+    Regex::new(r#"(?m)^\s*option\s+"([^"]+)"\s*,\s*"([^"]+)""#).expect("OPTION_RE must compile")
 });
 static RECOMMENDED_DEP_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*depends_on\s+["']([^"']+)["']\s*=>\s*:recommended"#)
@@ -139,7 +138,7 @@ mod tests {
     #[test]
     fn formula_options_extracts_declared_and_recommended_options() {
         let source = r#"
-            option "with-foo", "Build with foo"
+            option "with-foo", "Build with package's foo"
             depends_on "bar" => :recommended
             depends_on "baz" => :build
         "#;
@@ -147,7 +146,10 @@ mod tests {
         assert_eq!(
             formula_options(source),
             vec![
-                ("--with-foo".to_string(), "Build with foo".to_string()),
+                (
+                    "--with-foo".to_string(),
+                    "Build with package's foo".to_string()
+                ),
                 (
                     "--without-bar".to_string(),
                     "Build without bar support".to_string()
