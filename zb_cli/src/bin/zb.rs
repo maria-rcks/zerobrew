@@ -11,6 +11,10 @@ use zb_io::create_installer;
 
 #[tokio::main]
 async fn main() {
+    if print_homebrew_version(std::env::args_os()) {
+        return;
+    }
+
     let cli = Cli::parse();
     logging::init(cli.verbose, cli.quiet);
 
@@ -18,6 +22,23 @@ async fn main() {
         eprintln!("{} {}", style("error:").red().bold(), e);
         std::process::exit(1);
     }
+}
+
+fn print_homebrew_version<I>(args: I) -> bool
+where
+    I: IntoIterator<Item = std::ffi::OsString>,
+{
+    let args: Vec<_> = args.into_iter().collect();
+    if args.len() == 2 && matches!(args[1].to_str(), Some("--version" | "-V")) {
+        println!("Homebrew {}", homebrew_version());
+        return true;
+    }
+
+    false
+}
+
+fn homebrew_version() -> String {
+    std::env::var("HOMEBREW_VERSION").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string())
 }
 
 async fn run(cli: Cli) -> Result<(), zb_core::Error> {
