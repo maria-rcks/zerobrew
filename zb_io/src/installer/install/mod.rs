@@ -581,6 +581,28 @@ impl Installer {
         self.api_client.get_formula(name).await
     }
 
+    pub async fn formula_source(&self, name: &str) -> Result<String, Error> {
+        let formula = self.api_client.get_formula(name).await?;
+        let ruby_source_path =
+            formula
+                .ruby_source_path
+                .as_deref()
+                .ok_or_else(|| Error::ExecutionError {
+                    message: format!("no ruby_source_path for formula '{}'", formula.name),
+                })?;
+        let formula_rb_checksum = formula
+            .ruby_source_checksum
+            .as_ref()
+            .map(|checksum| checksum.sha256.as_str());
+        let cache_dir = self.prefix.join("tmp").join("rb_cache");
+        let formula_rb = self
+            .api_client
+            .fetch_formula_rb(ruby_source_path, &cache_dir, formula_rb_checksum)
+            .await?;
+
+        fs::read_to_string(formula_rb).map_err(Error::file("failed to read formula rb"))
+    }
+
     pub async fn formula_dependents(
         &self,
         name: &str,
@@ -1315,6 +1337,57 @@ mod tests {
         let names = installer.list_formula_names().await.unwrap();
 
         assert_eq!(names, vec!["bat", "zstd"]);
+    }
+
+    #[tokio::test]
+    async fn formula_source_fetches_ruby_source() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let api_client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri()))
+            .unwrap()
+            .with_core_raw_base_url(mock_server.uri());
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(&root).unwrap();
+        let cellar = Cellar::new(&root).unwrap();
+        let linker = Linker::new(&prefix).unwrap();
+        fs::create_dir_all(root.join("db")).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        let installer = Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix,
+            root.join("locks"),
+        );
+
+        let source = "class Testball < Formula\nend\n";
+        Mock::given(method("GET"))
+            .and(path("/formula/testball.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+                r#"{{
+                    "name":"testball",
+                    "versions":{{"stable":"0.1"}},
+                    "dependencies":[],
+                    "bottle":{{"stable":{{"files":{{}}}}}},
+                    "ruby_source_path":"Formula/t/testball.rb"
+                }}"#
+            )))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/Formula/t/testball.rb"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(source))
+            .mount(&mock_server)
+            .await;
+
+        let fetched = installer.formula_source("testball").await.unwrap();
+
+        assert_eq!(fetched, source);
     }
 
     #[tokio::test]
