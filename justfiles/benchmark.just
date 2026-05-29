@@ -286,7 +286,7 @@ bench *args:
         brew_prepare="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true"
         zb_cold_prepare="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true"
         zb_warm_setup="$(shell_join brew uninstall --ignore-dependencies "$pkg") >/dev/null 2>&1 || true; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $(shell_join zb reset -y) >/dev/null 2>&1 || true; $(shell_join zb install "$pkg") >/dev/null 2>&1"
-        zb_warm_prepare="$(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $zb_warm_setup"
+        zb_warm_prepare="$(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true; $zb_warm_setup; $(shell_join zb uninstall "$pkg") >/dev/null 2>&1 || true"
 
         brew_cmd=$(append_log_redirect "$(shell_join brew install "$pkg")")
         zb_cmd=$(append_log_redirect "$(shell_join zb install "$pkg")")
