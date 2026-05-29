@@ -269,6 +269,7 @@ mod tests {
 
         let formula = Formula {
             name: "legacy".to_string(),
+            homepage: None,
             aliases: Vec::new(),
             versions: Versions {
                 stable: "0.1.0".to_string(),
@@ -311,6 +312,7 @@ mod tests {
 
         let formula = Formula {
             name: "legacy".to_string(),
+            homepage: None,
             aliases: Vec::new(),
             versions: Versions {
                 stable: "0.1.0".to_string(),
@@ -395,6 +397,7 @@ mod tests {
 
         let formula = Formula {
             name: "libpq".to_string(),
+            homepage: None,
             aliases: Vec::new(),
             versions: Versions {
                 stable: "18.3".to_string(),
@@ -445,6 +448,7 @@ mod tests {
 
         let formula = Formula {
             name: "libpq".to_string(),
+            homepage: None,
             aliases: Vec::new(),
             versions: Versions {
                 stable: "18.3".to_string(),

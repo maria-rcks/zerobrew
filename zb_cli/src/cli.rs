@@ -76,10 +76,12 @@ where
     if args.get(1).is_some_and(|arg| arg == "--cellar") {
         args[1] = OsString::from("cellar");
     } else if args.get(1).is_some_and(|arg| arg == "--prefix") {
-        let value_is_probably_path = args
-            .get(2)
-            .is_some_and(|arg| arg.to_string_lossy().contains('/'));
-        if !value_is_probably_path {
+        let next = args.get(2).map(|arg| arg.to_string_lossy());
+        let has_following_command = args.get(3).is_some();
+        let value_is_probably_path = next
+            .as_ref()
+            .is_some_and(|arg| arg.starts_with('/') || arg.starts_with('.'));
+        if !has_following_command || !value_is_probably_path {
             args[1] = OsString::from("prefix");
         }
     }
@@ -376,6 +378,16 @@ mod tests {
             Some(std::path::Path::new("/opt/custom"))
         );
         assert!(matches!(cli.command, Commands::Config));
+
+        let cli = Cli::try_parse_from(["zb", "--prefix", "hashicorp/tap/terraform"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Prefix {
+                formulas,
+                installed: false,
+                ..
+            } if formulas == vec!["hashicorp/tap/terraform"]
+        ));
 
         let cli = Cli::try_parse_from(["zb", "--cellar"]).unwrap();
         assert!(matches!(cli.command, Commands::Cellar { formulas } if formulas.is_empty()));
