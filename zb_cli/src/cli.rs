@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use std::path::PathBuf;
+use std::{ffi::OsString, path::PathBuf};
 
 #[derive(Parser)]
 #[command(name = "zb")]
@@ -51,6 +51,41 @@ pub struct Cli {
     pub command: Commands,
 }
 
+impl Cli {
+    pub fn parse() -> Self {
+        let args = normalize_homebrew_flag_commands(std::env::args_os());
+        <Self as Parser>::parse_from(args)
+    }
+
+    pub fn try_parse_from<I, T>(itr: I) -> Result<Self, clap::Error>
+    where
+        I: IntoIterator<Item = T>,
+        T: Into<OsString> + Clone,
+    {
+        let args = normalize_homebrew_flag_commands(itr);
+        <Self as Parser>::try_parse_from(args)
+    }
+}
+
+fn normalize_homebrew_flag_commands<I, T>(itr: I) -> Vec<OsString>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let mut args: Vec<OsString> = itr.into_iter().map(Into::into).collect();
+    if args.get(1).is_some_and(|arg| arg == "--cellar") {
+        args[1] = OsString::from("cellar");
+    } else if args.get(1).is_some_and(|arg| arg == "--prefix") {
+        let value_is_probably_path = args
+            .get(2)
+            .is_some_and(|arg| arg.to_string_lossy().contains('/'));
+        if !value_is_probably_path {
+            args[1] = OsString::from("prefix");
+        }
+    }
+    args
+}
+
 fn parse_concurrency(value: &str) -> Result<usize, String> {
     let parsed = value
         .parse::<usize>()
@@ -64,7 +99,6 @@ fn parse_concurrency(value: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::{Cli, Commands};
-    use clap::Parser;
 
     #[test]
     fn accepts_positive_concurrency() {
@@ -290,6 +324,10 @@ mod tests {
 
     #[test]
     fn metadata_commands_parse_homebrew_forms() {
+        unsafe {
+            std::env::remove_var("ZEROBREW_PREFIX");
+        }
+
         let cli = Cli::try_parse_from(["zb", "options", "--compact", "--installed", "jq"]).unwrap();
         assert!(matches!(
             cli.command,
@@ -322,7 +360,7 @@ mod tests {
             } if formulas == vec!["jq"]
         ));
 
-        let cli = Cli::try_parse_from(["zb", "--prefix", "jq"]).unwrap();
+        let cli = Cli::try_parse_from(["zb", "prefix", "jq"]).unwrap();
         assert!(matches!(
             cli.command,
             Commands::Prefix {
@@ -331,6 +369,16 @@ mod tests {
                 ..
             } if formulas == vec!["jq"]
         ));
+
+        let cli = Cli::try_parse_from(["zb", "--prefix=/opt/custom", "config"]).unwrap();
+        assert_eq!(
+            cli.prefix.as_deref(),
+            Some(std::path::Path::new("/opt/custom"))
+        );
+        assert!(matches!(cli.command, Commands::Config));
+
+        let cli = Cli::try_parse_from(["zb", "--cellar"]).unwrap();
+        assert!(matches!(cli.command, Commands::Cellar { formulas } if formulas.is_empty()));
 
         let cli = Cli::try_parse_from(["zb", "cat", "--cask", "iterm2"]).unwrap();
         assert!(matches!(
