@@ -187,6 +187,29 @@ mod tests {
     }
 
     #[test]
+    fn pin_and_unpin_parse_homebrew_forms() {
+        let cli = Cli::try_parse_from(["zb", "pin", "--formula", "jq"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Pin {
+                formulas,
+                formula: true,
+                cask: false,
+            } if formulas == vec!["jq"]
+        ));
+
+        let cli = Cli::try_parse_from(["zb", "unpin", "--cask", "iterm2"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Unpin {
+                formulas,
+                formula: false,
+                cask: true,
+            } if formulas == vec!["iterm2"]
+        ));
+    }
+
+    #[test]
     fn uses_accepts_common_homebrew_flags() {
         let cli = Cli::try_parse_from([
             "zb",
@@ -238,7 +261,7 @@ mod tests {
 
     #[test]
     fn info_aliases_accept_common_homebrew_flags() {
-        let aliases = ["show", "cat", "desc", "home", "homepage"];
+        let aliases = ["show", "desc"];
         for alias in aliases {
             let cli = Cli::try_parse_from([
                 "zb",
@@ -262,6 +285,51 @@ mod tests {
                 } if formula == "jq"
             ));
         }
+    }
+
+    #[test]
+    fn metadata_commands_parse_homebrew_forms() {
+        let cli = Cli::try_parse_from(["zb", "options", "--compact", "--installed", "jq"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Options {
+                formulas,
+                compact: true,
+                installed: true,
+                eval_all: false,
+                command: None,
+            } if formulas == vec!["jq"]
+        ));
+
+        let cli = Cli::try_parse_from(["zb", "home", "--formula", "jq"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Home {
+                formulas,
+                formula: true,
+                cask: false,
+            } if formulas == vec!["jq"]
+        ));
+
+        let cli = Cli::try_parse_from(["zb", "--prefix", "--installed", "jq"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Prefix {
+                formulas,
+                installed: true,
+                ..
+            } if formulas == vec!["jq"]
+        ));
+
+        let cli = Cli::try_parse_from(["zb", "cat", "--cask", "iterm2"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Cat {
+                formulas,
+                formula: false,
+                cask: true,
+            } if formulas == vec!["iterm2"]
+        ));
     }
 
     #[test]
@@ -615,7 +683,7 @@ pub enum Commands {
         hide: Vec<String>,
     },
     /// Show information about a formula
-    #[command(visible_aliases = ["show", "cat", "desc", "home", "homepage"])]
+    #[command(visible_aliases = ["show", "desc"])]
     Info {
         #[arg(help = "Name of the formula")]
         formula: String,
@@ -721,6 +789,73 @@ pub enum Commands {
         greedy_auto_updates: bool,
         #[arg(long, help = "Show latest-version casks when supported")]
         greedy_latest: bool,
+    },
+    /// Pin installed packages to their current versions
+    Pin {
+        #[arg(required = true, num_args = 1.., help = "Packages to pin")]
+        formulas: Vec<String>,
+        #[arg(long, conflicts_with = "cask", help = "Treat packages as formulae")]
+        formula: bool,
+        #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
+        cask: bool,
+    },
+    /// Unpin packages so they can be upgraded
+    Unpin {
+        #[arg(required = true, num_args = 1.., help = "Packages to unpin")]
+        formulas: Vec<String>,
+        #[arg(long, conflicts_with = "cask", help = "Treat packages as formulae")]
+        formula: bool,
+        #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
+        cask: bool,
+    },
+    /// Show install options for formulae
+    Options {
+        #[arg(num_args = 0.., help = "Formula names")]
+        formulas: Vec<String>,
+        #[arg(long, help = "Show options on one line")]
+        compact: bool,
+        #[arg(long, help = "Show installed formula options")]
+        installed: bool,
+        #[arg(long, help = "Evaluate all formulae when supported")]
+        eval_all: bool,
+        #[arg(long, help = "Show options for a command")]
+        command: Option<String>,
+    },
+    /// Print zerobrew prefix or formula Cellar paths
+    #[command(name = "prefix", visible_alias = "--prefix")]
+    Prefix {
+        #[arg(num_args = 0.., help = "Formula names")]
+        formulas: Vec<String>,
+        #[arg(long, help = "Only print paths for installed formulae")]
+        installed: bool,
+        #[arg(long, help = "List unbrewed files when supported")]
+        unbrewed: bool,
+    },
+    /// Print zerobrew Cellar path or formula Cellar paths
+    #[command(name = "cellar", visible_alias = "--cellar")]
+    Cellar {
+        #[arg(num_args = 0.., help = "Formula names")]
+        formulas: Vec<String>,
+    },
+    /// Print formula source URLs
+    #[command(name = "cat")]
+    Cat {
+        #[arg(required = true, num_args = 1.., help = "Formula names")]
+        formulas: Vec<String>,
+        #[arg(long, conflicts_with = "cask", help = "Treat packages as formulae")]
+        formula: bool,
+        #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
+        cask: bool,
+    },
+    /// Print formula homepages
+    #[command(visible_alias = "homepage")]
+    Home {
+        #[arg(num_args = 0.., help = "Formula names")]
+        formulas: Vec<String>,
+        #[arg(long, conflicts_with = "cask", help = "Treat packages as formulae")]
+        formula: bool,
+        #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
+        cask: bool,
     },
 }
 

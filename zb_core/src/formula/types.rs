@@ -126,11 +126,7 @@ pub struct Formula {
 
 impl Formula {
     pub fn effective_version(&self) -> String {
-        if self.revision > 0 {
-            format!("{}_{}", self.versions.stable, self.revision)
-        } else {
-            self.versions.stable.clone()
-        }
+        effective_version(&self.versions.stable, self.revision)
     }
 
     pub fn is_keg_only(&self) -> bool {
@@ -168,6 +164,14 @@ impl Formula {
             deps
         };
         deps
+    }
+}
+
+pub fn effective_version(stable: &str, revision: u32) -> String {
+    if revision > 0 {
+        format!("{stable}_{revision}")
+    } else {
+        stable.to_string()
     }
 }
 

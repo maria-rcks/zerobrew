@@ -21,6 +21,9 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "migrate",
     "missing",
     "outdated",
+    "options",
+    "pin",
+    "prefix",
     "reinstall",
     "reset",
     "run",
@@ -28,14 +31,16 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "shellenv",
     "uninstall",
     "unlink",
+    "unpin",
     "update",
     "upgrade",
     "uses",
 ];
 
 const COMMAND_ALIASES: &[&str] = &[
-    "add", "b", "cat", "cfg", "check", "clean", "cmds", "desc", "env", "find", "home", "homepage",
-    "i", "leaf", "ln", "ls", "old", "prune", "re", "remove", "rm", "show", "ug", "unln", "up",
+    "add", "b", "cat", "cellar", "cfg", "check", "clean", "cmds", "desc", "env", "find", "home",
+    "homepage", "i", "leaf", "ln", "ls", "old", "prune", "re", "remove", "rm", "show", "ug",
+    "unln", "up",
 ];
 
 pub fn execute(quiet: bool, include_aliases: bool) -> Result<(), zb_core::Error> {
