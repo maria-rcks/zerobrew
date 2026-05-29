@@ -67,9 +67,13 @@ async fn write_missing_formula_files(
 }
 
 fn repository_path(default: &Path) -> PathBuf {
-    std::env::var_os("HOMEBREW_TEST_TMPDIR")
-        .map(|path| PathBuf::from(path).join("prefix"))
-        .unwrap_or_else(|| default.to_path_buf())
+    if std::env::var_os("HOMEBREW_INTEGRATION_TEST").is_some()
+        && let Some(path) = std::env::var_os("HOMEBREW_TEST_TMPDIR")
+    {
+        return PathBuf::from(path).join("prefix");
+    }
+
+    default.to_path_buf()
 }
 
 fn edit_paths(repository: &Path, formulas: &[String], cask: bool) -> Vec<PathBuf> {
@@ -110,11 +114,23 @@ fn formula_tap_path(formula: &str) -> (PathBuf, &str) {
 }
 
 fn cask_path(repository: &Path, cask: &str) -> PathBuf {
-    let token = cask.rsplit('/').next().unwrap_or(cask);
+    let (tap_path, token) = cask_tap_path(cask);
     repository
-        .join("Library/Taps/homebrew/homebrew-cask")
+        .join("Library/Taps")
+        .join(tap_path)
         .join("Casks")
         .join(format!("{token}.rb"))
+}
+
+fn cask_tap_path(cask: &str) -> (PathBuf, &str) {
+    let mut parts = cask.split('/');
+    let (Some(owner), Some(repo), Some(token), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return (PathBuf::from("homebrew/homebrew-cask"), cask);
+    };
+
+    (PathBuf::from(owner).join(format!("homebrew-{repo}")), token)
 }
 
 fn editor() -> Result<String, zb_core::Error> {
@@ -139,7 +155,7 @@ fn ui_error(err: std::io::Error) -> zb_core::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{edit_paths, formula_tap_path, repository_path};
+    use super::{cask_tap_path, edit_paths, formula_tap_path, repository_path};
     use std::path::Path;
 
     #[test]
@@ -177,6 +193,16 @@ mod tests {
     }
 
     #[test]
+    fn edit_paths_points_tapped_casks_at_tap_files() {
+        assert_eq!(
+            edit_paths(Path::new("/repo"), &["owner/tap/app".to_string()], true),
+            vec![Path::new(
+                "/repo/Library/Taps/owner/homebrew-tap/Casks/app.rb"
+            )]
+        );
+    }
+
+    #[test]
     fn edit_paths_opens_repository_without_arguments() {
         assert_eq!(
             edit_paths(Path::new("/repo"), &[], false),
@@ -187,6 +213,7 @@ mod tests {
     #[test]
     fn repository_path_prefers_homebrew_test_tmpdir() {
         unsafe {
+            std::env::set_var("HOMEBREW_INTEGRATION_TEST", "edit");
             std::env::set_var("HOMEBREW_TEST_TMPDIR", "/tmp/homebrew-tests-demo");
         }
 
@@ -194,6 +221,21 @@ mod tests {
             repository_path(Path::new("/repo")),
             Path::new("/tmp/homebrew-tests-demo/prefix")
         );
+
+        unsafe {
+            std::env::remove_var("HOMEBREW_INTEGRATION_TEST");
+            std::env::remove_var("HOMEBREW_TEST_TMPDIR");
+        }
+    }
+
+    #[test]
+    fn repository_path_ignores_homebrew_test_tmpdir_outside_integration_tests() {
+        unsafe {
+            std::env::remove_var("HOMEBREW_INTEGRATION_TEST");
+            std::env::set_var("HOMEBREW_TEST_TMPDIR", "/tmp/homebrew-tests-demo");
+        }
+
+        assert_eq!(repository_path(Path::new("/repo")), Path::new("/repo"));
 
         unsafe {
             std::env::remove_var("HOMEBREW_TEST_TMPDIR");
@@ -206,6 +248,17 @@ mod tests {
             formula_tap_path("owner/repo/token/extra"),
             (
                 Path::new("homebrew/homebrew-core").to_path_buf(),
+                "owner/repo/token/extra"
+            )
+        );
+    }
+
+    #[test]
+    fn cask_tap_path_ignores_invalid_tap_qualified_names() {
+        assert_eq!(
+            cask_tap_path("owner/repo/token/extra"),
+            (
+                Path::new("homebrew/homebrew-cask").to_path_buf(),
                 "owner/repo/token/extra"
             )
         );
