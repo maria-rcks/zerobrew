@@ -7,6 +7,7 @@ pub fn execute(
     json: bool,
 ) -> Result<(), zb_core::Error> {
     let installed = installer.list_installed()?;
+    let had_installed = !installed.is_empty();
     let installed: Vec<_> = if formulas.is_empty() {
         installed
     } else {
@@ -35,7 +36,9 @@ pub fn execute(
     }
 
     if installed.is_empty() {
-        println!("No formulas installed.");
+        if formulas.is_empty() && !had_installed {
+            println!("No formulas installed.");
+        }
     } else {
         for keg in installed {
             if versions {
