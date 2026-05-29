@@ -149,6 +149,12 @@ mod tests {
     }
 
     #[test]
+    fn list_rejects_formula_with_cask() {
+        let result = Cli::try_parse_from(["zb", "list", "--formula", "--cask"]);
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn info_aliases_accept_common_homebrew_flags() {
         let aliases = ["show", "cat", "desc", "home", "homepage", "uses"];
         for alias in aliases {
@@ -446,9 +452,9 @@ pub enum Commands {
     List {
         #[arg(num_args = 0.., help = "Packages to list")]
         formulas: Vec<String>,
-        #[arg(long, help = "List formulae only")]
+        #[arg(long, conflicts_with = "cask", help = "List formulae only")]
         formula: bool,
-        #[arg(long, help = "List casks only")]
+        #[arg(long, conflicts_with = "formula", help = "List casks only")]
         cask: bool,
         #[arg(long, help = "Show installed package versions")]
         versions: bool,
