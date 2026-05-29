@@ -201,7 +201,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Uses {
             formulas,
             eval_all,
+            include_build,
             include_optional,
+            include_test,
             missing,
             recursive,
         } => {
@@ -209,12 +211,13 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 &[
                     (eval_all, "--eval-all"),
                     (include_optional, "--include-optional"),
+                    (include_test, "--include-test"),
                     (missing, "--missing"),
                     (recursive, "--recursive"),
                 ],
                 &mut ui,
             )?;
-            commands::uses::execute(&mut installer, formulas).await
+            commands::uses::execute(&mut installer, formulas, include_build).await
         }
         Commands::Info {
             formula,

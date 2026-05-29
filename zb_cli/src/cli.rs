@@ -192,7 +192,9 @@ mod tests {
             "zb",
             "uses",
             "--eval-all",
+            "--include-build",
             "--include-optional",
+            "--include-test",
             "--missing",
             "--recursive",
             "openssl@3",
@@ -203,7 +205,9 @@ mod tests {
             Commands::Uses {
                 formulas,
                 eval_all: true,
+                include_build: true,
                 include_optional: true,
+                include_test: true,
                 missing: true,
                 recursive: true,
             } if formulas == vec!["openssl@3"]
@@ -549,8 +553,12 @@ pub enum Commands {
         formulas: Vec<String>,
         #[arg(long, help = "Also evaluate all formulae when supported")]
         eval_all: bool,
+        #[arg(long, help = "Include build dependencies when finding dependents")]
+        include_build: bool,
         #[arg(long, help = "Include optional dependencies when supported")]
         include_optional: bool,
+        #[arg(long, help = "Include test dependencies when supported")]
+        include_test: bool,
         #[arg(long, help = "Only show missing dependents when supported")]
         missing: bool,
         #[arg(long, help = "Resolve dependents recursively when supported")]
