@@ -219,6 +219,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             )?;
             commands::uses::execute(&mut installer, formulas, include_build).await
         }
+        Commands::Missing { formulas, hide } => {
+            commands::missing::execute(&mut installer, formulas, hide).await
+        }
         Commands::Info {
             formula,
             installed: _,

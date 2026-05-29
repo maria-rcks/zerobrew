@@ -534,6 +534,60 @@ impl Installer {
         Ok(dependents)
     }
 
+    pub async fn missing_dependencies(
+        &self,
+        formulas: &[String],
+        hidden: &[String],
+    ) -> Result<Vec<(String, Vec<String>)>, Error> {
+        let installed = self.db.list_installed()?;
+        let installed_tokens: HashSet<_> = installed
+            .iter()
+            .map(|keg| formula_token(&keg.name).to_string())
+            .collect();
+        let hidden_tokens: HashSet<_> = hidden
+            .iter()
+            .map(|name| formula_token(name).to_string())
+            .collect();
+
+        let targets: Vec<String> = if formulas.is_empty() {
+            installed
+                .into_iter()
+                .filter(|keg| !keg.name.starts_with("cask:"))
+                .map(|keg| keg.name)
+                .collect()
+        } else {
+            formulas.to_vec()
+        };
+
+        let mut missing = Vec::new();
+        for formula in targets {
+            if !self.is_installed(&formula) {
+                return Err(Error::NotInstalled { name: formula });
+            }
+            let formula_name_token = formula_token(&formula).to_string();
+            if hidden_tokens.contains(&formula_name_token) {
+                continue;
+            }
+
+            let dependencies = self.formula_dependencies(&formula, false).await?;
+            let formula_missing: Vec<String> = dependencies
+                .into_iter()
+                .filter(|dependency| {
+                    let token = formula_token(dependency);
+                    if hidden_tokens.contains(token) {
+                        return true;
+                    }
+                    !installed_tokens.contains(token) && self.is_installed(token)
+                })
+                .collect();
+            if !formula_missing.is_empty() {
+                missing.push((formula, formula_missing));
+            }
+        }
+
+        Ok(missing)
+    }
+
     pub async fn list_leaves(&self) -> Result<Vec<crate::storage::db::InstalledKeg>, Error> {
         let installed = self.db.list_installed()?;
         let formula_kegs: Vec<_> = installed
@@ -1023,6 +1077,103 @@ mod tests {
         assert_eq!(all_dependencies, vec!["build", "runtime"]);
         #[cfg(not(target_os = "macos"))]
         assert_eq!(all_dependencies, vec!["build", "macos-runtime", "runtime"]);
+    }
+
+    #[tokio::test]
+    async fn missing_dependencies_reports_absent_runtime_deps() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        let root_json = serde_json::json!({
+            "name": "root",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": ["dep", "missing-dep"],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "x86_64_linux": {
+                            "sha256": "abc123",
+                            "url": "https://example.test/root.tar.gz"
+                        }
+                    }
+                }
+            }
+        });
+        let dep_json = serde_json::json!({
+            "name": "dep",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": [],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "x86_64_linux": {
+                            "sha256": "abc123",
+                            "url": "https://example.test/dep.tar.gz"
+                        }
+                    }
+                }
+            }
+        });
+        let missing_dep_json = serde_json::json!({
+            "name": "missing-dep",
+            "versions": { "stable": "1.0.0" },
+            "dependencies": [],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "x86_64_linux": {
+                            "sha256": "abc123",
+                            "url": "https://example.test/missing-dep.tar.gz"
+                        }
+                    }
+                }
+            }
+        });
+
+        Mock::given(method("GET"))
+            .and(path("/formula/root.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(root_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/formula/dep.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(dep_json))
+            .mount(&mock_server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/formula/missing-dep.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(missing_dep_json))
+            .mount(&mock_server)
+            .await;
+
+        let tx = installer.db.transaction().unwrap();
+        tx.record_install("root", "1.0.0", "root-key").unwrap();
+        tx.record_install("dep", "1.0.0", "dep-key").unwrap();
+        tx.record_install("missing-dep", "1.0.0", "missing-key")
+            .unwrap();
+        tx.commit().unwrap();
+        fs::create_dir_all(installer.keg_path("root", "1.0.0")).unwrap();
+        fs::create_dir_all(installer.keg_path("dep", "1.0.0")).unwrap();
+        fs::create_dir_all(installer.keg_path("missing-dep", "1.0.0")).unwrap();
+
+        let no_missing = installer.missing_dependencies(&[], &[]).await.unwrap();
+        let hidden_missing = installer
+            .missing_dependencies(&["root".to_string()], &["dep".to_string()])
+            .await
+            .unwrap();
+
+        assert!(no_missing.is_empty());
+        assert_eq!(
+            hidden_missing,
+            vec![("root".to_string(), vec!["dep".to_string()])]
+        );
     }
 
     #[tokio::test]

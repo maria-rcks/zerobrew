@@ -215,6 +215,28 @@ mod tests {
     }
 
     #[test]
+    fn missing_accepts_homebrew_flags_and_optional_formulas() {
+        let cli =
+            Cli::try_parse_from(["zb", "missing", "--hide", "openssl@3,zlib", "curl"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Missing {
+                formulas,
+                hide,
+            } if formulas == vec!["curl"] && hide == vec!["openssl@3", "zlib"]
+        ));
+
+        let cli = Cli::try_parse_from(["zb", "missing"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Missing {
+                formulas,
+                hide,
+            } if formulas.is_empty() && hide.is_empty()
+        ));
+    }
+
+    #[test]
     fn info_aliases_accept_common_homebrew_flags() {
         let aliases = ["show", "cat", "desc", "home", "homepage"];
         for alias in aliases {
@@ -563,6 +585,17 @@ pub enum Commands {
         missing: bool,
         #[arg(long, help = "Resolve dependents recursively when supported")]
         recursive: bool,
+    },
+    /// Check installed packages for missing dependencies
+    Missing {
+        #[arg(num_args = 0.., help = "Formula names to inspect")]
+        formulas: Vec<String>,
+        #[arg(
+            long,
+            value_delimiter = ',',
+            help = "Act as if hidden formulae are not installed"
+        )]
+        hide: Vec<String>,
     },
     /// Show information about a formula
     #[command(visible_aliases = ["show", "cat", "desc", "home", "homepage"])]
