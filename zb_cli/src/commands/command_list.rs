@@ -4,6 +4,8 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "autoremove",
     "bundle",
     "casks",
+    "cat",
+    "cellar",
     "cleanup",
     "commands",
     "completion",
@@ -12,6 +14,7 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "doctor",
     "formulae",
     "gc",
+    "home",
     "info",
     "init",
     "install",
@@ -38,9 +41,8 @@ const BUILT_IN_COMMANDS: &[&str] = &[
 ];
 
 const COMMAND_ALIASES: &[&str] = &[
-    "add", "b", "cat", "cellar", "cfg", "check", "clean", "cmds", "desc", "env", "find", "home",
-    "homepage", "i", "leaf", "ln", "ls", "old", "prune", "re", "remove", "rm", "show", "ug",
-    "unln", "up",
+    "add", "b", "cfg", "check", "clean", "cmds", "desc", "env", "find", "homepage", "i", "leaf",
+    "ln", "ls", "old", "prune", "re", "remove", "rm", "show", "ug", "unln", "up",
 ];
 
 pub fn execute(quiet: bool, include_aliases: bool) -> Result<(), zb_core::Error> {

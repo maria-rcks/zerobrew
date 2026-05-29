@@ -9,10 +9,7 @@ pub async fn execute(
 
     for formula in formulas {
         let formula = installer.formula_metadata(&formula).await?;
-        let homepage = formula
-            .source_url()
-            .map(|url| url.url.as_str())
-            .unwrap_or("https://brew.sh/");
+        let homepage = formula.homepage.as_deref().unwrap_or("https://brew.sh/");
         println!("{homepage}");
     }
     Ok(())

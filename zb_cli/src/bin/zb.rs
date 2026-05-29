@@ -271,8 +271,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             formulas,
             installed: _,
             unbrewed: _,
+        } => commands::prefix::execute(&prefix, formulas, commands::prefix::PathKind::Prefix),
+        Commands::Cellar { formulas } => {
+            commands::prefix::execute(&prefix, formulas, commands::prefix::PathKind::Cellar)
         }
-        | Commands::Cellar { formulas } => commands::prefix::execute(&prefix, formulas),
         Commands::Cat {
             formulas,
             formula: _,

@@ -98,6 +98,8 @@ impl UsesFromMacos {
 pub struct Formula {
     pub name: String,
     #[serde(default)]
+    pub homepage: Option<String>,
+    #[serde(default)]
     pub aliases: Vec<String>,
     pub versions: Versions,
     pub dependencies: Vec<String>,
