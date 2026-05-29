@@ -279,13 +279,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Options {
             formulas,
             compact,
-            installed,
+            installed: _,
             eval_all: _,
             command,
-        } => {
-            commands::options::execute(&mut installer, &root, formulas, compact, installed, command)
-                .await
-        }
+        } => commands::options::execute(&mut installer, &root, formulas, compact, command).await,
         Commands::Cat {
             formulas,
             formula: _,
