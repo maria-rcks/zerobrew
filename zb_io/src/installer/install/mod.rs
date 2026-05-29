@@ -40,25 +40,39 @@ struct FormulaDependentsEntry {
 
 #[derive(serde::Deserialize)]
 struct FormulaIndexVersionEntry {
-    name: String,
-    versions: Versions,
+    name: Option<String>,
+    versions: Option<Versions>,
     #[serde(default)]
     revision: u32,
 }
 
 impl FormulaIndexVersionEntry {
-    fn effective_version(&self) -> String {
-        if self.revision > 0 {
-            format!("{}_{}", self.versions.stable, self.revision)
+    fn into_version(self) -> Option<(String, String)> {
+        let name = self.name?;
+        let stable = self.versions?.stable;
+        let version = if self.revision > 0 {
+            format!("{}_{}", stable, self.revision)
         } else {
-            self.versions.stable.clone()
-        }
+            stable
+        };
+        Some((name, version))
     }
 }
 
 #[derive(serde::Deserialize)]
 struct CaskIndexEntry {
+    #[serde(default)]
     token: String,
+}
+
+impl CaskIndexEntry {
+    fn token(self) -> Option<String> {
+        if self.token.is_empty() {
+            None
+        } else {
+            Some(self.token)
+        }
+    }
 }
 
 use bottle::dependency_cellar_path;
@@ -78,7 +92,7 @@ fn formula_index_versions(raw: &str) -> Result<Vec<(String, String)>, Error> {
         serde_json::from_str::<Vec<FormulaIndexVersionEntry>>(raw)
             .map_err(Error::network("failed to parse bulk formula index JSON"))?
             .into_iter()
-            .map(|entry| (entry.name.clone(), entry.effective_version()))
+            .filter_map(FormulaIndexVersionEntry::into_version)
             .collect();
     versions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
     Ok(versions)
@@ -88,7 +102,7 @@ fn cask_index_tokens(raw: &str) -> Result<Vec<String>, Error> {
     let mut tokens: Vec<String> = serde_json::from_str::<Vec<CaskIndexEntry>>(raw)
         .map_err(Error::network("failed to parse bulk cask index JSON"))?
         .into_iter()
-        .map(|entry| entry.token)
+        .filter_map(CaskIndexEntry::token)
         .collect();
     tokens.sort_unstable();
     Ok(tokens)
@@ -1334,9 +1348,10 @@ mod tests {
             .and(path("/cask.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"[
-                            {"token":"visual-studio-code","name":["Visual Studio Code"]},
-                            {"token":"iterm2","name":["iTerm2"]}
-                        ]"#,
+                    {"token":"visual-studio-code","name":["Visual Studio Code"]},
+                    {"token":"iterm2","name":["iTerm2"]},
+                    {"name":["Missing Token"]}
+                ]"#,
             ))
             .mount(&mock_server)
             .await;
@@ -1363,7 +1378,9 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_string(
                 r#"[
                     {"name":"zstd","versions":{"stable":"1.5.7"}},
-                    {"name":"jq","versions":{"stable":"1.7.1"},"revision":2}
+                    {"name":"jq","versions":{"stable":"1.7.1"},"revision":2},
+                    {"name":"missing-versions"},
+                    {"versions":{"stable":"0.0.1"}}
                 ]"#,
             ))
             .mount(&mock_server)
