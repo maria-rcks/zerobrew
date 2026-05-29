@@ -78,7 +78,7 @@ fn print_command_options(command: &str, compact: bool) -> Result<(), zb_core::Er
     }
 
     Err(zb_core::Error::InvalidArgument {
-        message: format!("Unknown command: brew {command}"),
+        message: format!("Unknown command: zb {command}"),
     })
 }
 
@@ -133,7 +133,7 @@ fn formula_options(source: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{format_options, formula_options};
+    use super::{format_options, formula_options, print_command_options};
 
     #[test]
     fn formula_options_extracts_declared_and_recommended_options() {
@@ -159,7 +159,7 @@ mod tests {
     }
 
     #[test]
-    fn format_options_renders_homebrew_multiline_output() {
+    fn format_options_renders_multiline_output() {
         let options = vec![
             ("--with-foo".to_string(), "Build with foo".to_string()),
             (
@@ -185,5 +185,12 @@ mod tests {
         ];
 
         assert_eq!(format_options(&options, true), "--with-foo --without-bar\n");
+    }
+
+    #[test]
+    fn command_options_error_uses_zerobrew_branding() {
+        let err = print_command_options("unknown", false).unwrap_err();
+
+        assert!(err.to_string().contains("Unknown command: zb unknown"));
     }
 }

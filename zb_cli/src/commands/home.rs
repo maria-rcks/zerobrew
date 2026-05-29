@@ -3,13 +3,16 @@ pub async fn execute(
     formulas: Vec<String>,
 ) -> Result<(), zb_core::Error> {
     if formulas.is_empty() {
-        println!("https://brew.sh/");
+        println!("https://github.com/maria-rcks/zerobrew");
         return Ok(());
     }
 
     for formula in formulas {
         let formula = installer.formula_metadata(&formula).await?;
-        let homepage = formula.homepage.as_deref().unwrap_or("https://brew.sh/");
+        let homepage = formula
+            .homepage
+            .as_deref()
+            .unwrap_or("https://github.com/maria-rcks/zerobrew");
         println!("{homepage}");
     }
     Ok(())
