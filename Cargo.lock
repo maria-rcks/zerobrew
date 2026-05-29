@@ -3275,6 +3275,7 @@ dependencies = [
  "flate2",
  "indicatif",
  "libc",
+ "regex",
  "serde_json",
  "sha2",
  "tar",

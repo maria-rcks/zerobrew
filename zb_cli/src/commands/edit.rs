@@ -66,7 +66,7 @@ async fn write_missing_formula_files(
     Ok(())
 }
 
-fn repository_path(default: &Path) -> PathBuf {
+pub(crate) fn repository_path(default: &Path) -> PathBuf {
     if std::env::var_os("HOMEBREW_INTEGRATION_TEST").is_some()
         && let Some(path) = std::env::var_os("HOMEBREW_TEST_TMPDIR")
     {
@@ -93,7 +93,7 @@ fn edit_paths(repository: &Path, formulas: &[String], cask: bool) -> Vec<PathBuf
         .collect()
 }
 
-fn formula_path(repository: &Path, formula: &str) -> PathBuf {
+pub(crate) fn formula_path(repository: &Path, formula: &str) -> PathBuf {
     let (tap_path, token) = formula_tap_path(formula);
     repository
         .join("Library/Taps")
