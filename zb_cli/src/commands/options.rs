@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -17,13 +18,12 @@ pub async fn execute(
     repository: &Path,
     formulas: Vec<String>,
     compact: bool,
-    installed: bool,
     command: Option<String>,
 ) -> Result<(), zb_core::Error> {
     if let Some(command) = command {
         return print_command_options(&command, compact);
     }
-    if installed || formulas.is_empty() {
+    if formulas.is_empty() {
         print_global_options(compact);
         return Ok(());
     }
@@ -83,26 +83,34 @@ fn print_command_options(command: &str, compact: bool) -> Result<(), zb_core::Er
     })
 }
 
-fn print_options(options: &[(String, String)], compact: bool) {
+fn format_options(options: &[(String, String)], compact: bool) -> String {
+    let mut output = String::new();
     if compact {
-        println!(
+        writeln!(
+            output,
             "{}",
             options
                 .iter()
                 .map(|(flag, _)| flag.as_str())
                 .collect::<Vec<_>>()
                 .join(" ")
-        );
-        return;
+        )
+        .expect("writing to a String cannot fail");
+        return output;
     }
 
     for (flag, description) in options {
-        println!("{flag}");
+        writeln!(output, "{flag}").expect("writing to a String cannot fail");
         if !description.is_empty() {
-            println!("\t{description}");
+            writeln!(output, "\t{description}").expect("writing to a String cannot fail");
         }
     }
-    println!();
+    output.push('\n');
+    output
+}
+
+fn print_options(options: &[(String, String)], compact: bool) {
+    print!("{}", format_options(options, compact));
 }
 
 fn formula_options(source: &str) -> Vec<(String, String)> {
@@ -126,7 +134,7 @@ fn formula_options(source: &str) -> Vec<(String, String)> {
 
 #[cfg(test)]
 mod tests {
-    use super::formula_options;
+    use super::{format_options, formula_options};
 
     #[test]
     fn formula_options_extracts_declared_and_recommended_options() {
@@ -146,5 +154,34 @@ mod tests {
                 )
             ]
         );
+    }
+
+    #[test]
+    fn format_options_renders_homebrew_multiline_output() {
+        let options = vec![
+            ("--with-foo".to_string(), "Build with foo".to_string()),
+            (
+                "--without-bar".to_string(),
+                "Build without bar support".to_string(),
+            ),
+        ];
+
+        assert_eq!(
+            format_options(&options, false),
+            "--with-foo\n\tBuild with foo\n--without-bar\n\tBuild without bar support\n\n"
+        );
+    }
+
+    #[test]
+    fn format_options_renders_compact_flags_only() {
+        let options = vec![
+            ("--with-foo".to_string(), "Build with foo".to_string()),
+            (
+                "--without-bar".to_string(),
+                "Build without bar support".to_string(),
+            ),
+        ];
+
+        assert_eq!(format_options(&options, true), "--with-foo --without-bar\n");
     }
 }
