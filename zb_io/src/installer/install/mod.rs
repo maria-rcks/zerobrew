@@ -31,6 +31,8 @@ struct FormulaDependentsEntry {
     name: String,
     #[serde(default)]
     dependencies: Vec<String>,
+    #[serde(default)]
+    build_dependencies: Vec<String>,
 }
 
 use bottle::dependency_cellar_path;
@@ -487,7 +489,11 @@ impl Installer {
         Ok(dependencies)
     }
 
-    pub async fn formula_dependents(&self, name: &str) -> Result<Vec<String>, Error> {
+    pub async fn formula_dependents(
+        &self,
+        name: &str,
+        include_build: bool,
+    ) -> Result<Vec<String>, Error> {
         let requested = formula_token(name).to_string();
         let bulk_raw = self.api_client.get_all_formulas_raw().await?;
         let bulk_values: Vec<serde_json::Value> = serde_json::from_str(&bulk_raw)
@@ -496,11 +502,16 @@ impl Installer {
             .into_iter()
             .filter_map(|value| serde_json::from_value::<FormulaDependentsEntry>(value).ok())
             .filter_map(|formula| {
-                let depends_on_requested = formula
+                let runtime_match = formula
                     .dependencies
                     .iter()
                     .any(|dependency| formula_token(dependency) == requested);
-                depends_on_requested.then_some(formula.name)
+                let build_match = include_build
+                    && formula
+                        .build_dependencies
+                        .iter()
+                        .any(|dependency| formula_token(dependency) == requested);
+                (runtime_match || build_match).then_some(formula.name)
             })
             .collect();
         dependents.sort_unstable();
@@ -1004,6 +1015,7 @@ mod tests {
         );
 
         let bulk_json = r#"[
+            { "name": "build-dependent", "build_dependencies": ["openssl@3"] },
             { "name": "dependent", "dependencies": ["openssl@3"] },
             { "name": "other", "dependencies": ["zlib"] },
             { "name": "tap-dependent", "dependencies": ["homebrew/core/openssl@3"] },
@@ -1016,9 +1028,20 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        let dependents = installer.formula_dependents("openssl@3").await.unwrap();
+        let dependents = installer
+            .formula_dependents("openssl@3", false)
+            .await
+            .unwrap();
+        let all_dependents = installer
+            .formula_dependents("openssl@3", true)
+            .await
+            .unwrap();
 
         assert_eq!(dependents, vec!["dependent", "tap-dependent"]);
+        assert_eq!(
+            all_dependents,
+            vec!["build-dependent", "dependent", "tap-dependent"]
+        );
     }
 
     #[tokio::test]
