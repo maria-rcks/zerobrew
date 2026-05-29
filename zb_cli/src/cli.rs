@@ -73,6 +73,7 @@ where
     T: Into<OsString> + Clone,
 {
     let mut args: Vec<OsString> = itr.into_iter().map(Into::into).collect();
+    normalize_global_prefix_args(&mut args);
     if args.get(1).is_some_and(|arg| arg == "--cellar") {
         args[1] = OsString::from("cellar");
     } else if args.get(1).is_some_and(|arg| arg == "--prefix") {
@@ -86,6 +87,24 @@ where
         }
     }
     args
+}
+
+fn normalize_global_prefix_args(args: &mut Vec<OsString>) {
+    let mut index = 1;
+    while index + 2 < args.len() {
+        if args[index] == "--prefix" && value_is_probably_path(&args[index + 1]) {
+            let value = args.remove(index + 1);
+            let mut normalized = OsString::from("--prefix=");
+            normalized.push(value);
+            args[index] = normalized;
+        }
+        index += 1;
+    }
+}
+
+fn value_is_probably_path(value: &OsString) -> bool {
+    let value = value.to_string_lossy();
+    value.starts_with('/') || value.starts_with('.')
 }
 
 fn parse_concurrency(value: &str) -> Result<usize, String> {
@@ -378,6 +397,34 @@ mod tests {
             Some(std::path::Path::new("/opt/custom"))
         );
         assert!(matches!(cli.command, Commands::Config));
+
+        let cli = Cli::try_parse_from(["zb", "--prefix", "/opt/custom", "config"]).unwrap();
+        assert_eq!(
+            cli.prefix.as_deref(),
+            Some(std::path::Path::new("/opt/custom"))
+        );
+        assert!(matches!(cli.command, Commands::Config));
+
+        let cli = Cli::try_parse_from([
+            "zb",
+            "--root",
+            "/tmp/zbcompat",
+            "--prefix",
+            "/tmp/zbcompat",
+            "init",
+            "--no-modify-path",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.prefix.as_deref(),
+            Some(std::path::Path::new("/tmp/zbcompat"))
+        );
+        assert!(matches!(
+            cli.command,
+            Commands::Init {
+                no_modify_path: true
+            }
+        ));
 
         let cli = Cli::try_parse_from(["zb", "--prefix", "hashicorp/tap/terraform"]).unwrap();
         assert!(matches!(
