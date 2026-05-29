@@ -1138,6 +1138,10 @@ mod tests {
             .missing_dependencies(&["root".to_string()], &["dep".to_string()])
             .await
             .unwrap();
+        let hidden_target_missing = installer
+            .missing_dependencies(&["root".to_string()], &["root".to_string()])
+            .await
+            .unwrap();
 
         assert_eq!(
             missing,
@@ -1149,6 +1153,10 @@ mod tests {
                 "root".to_string(),
                 vec!["dep".to_string(), "missing-dep".to_string()]
             )]
+        );
+        assert_eq!(
+            hidden_target_missing,
+            vec![("root".to_string(), vec!["missing-dep".to_string()])]
         );
     }
 
