@@ -566,6 +566,12 @@ mod tests {
     }
 
     #[test]
+    fn setup_ruby_command_parses() {
+        let cli = Cli::try_parse_from(["zb", "setup-ruby"]).unwrap();
+        assert!(matches!(cli.command, Commands::SetupRuby));
+    }
+
+    #[test]
     fn outdated_accepts_common_homebrew_filter_flags() {
         let cli = Cli::try_parse_from([
             "zb",
@@ -897,6 +903,8 @@ pub enum Commands {
         #[arg(long, help = "Search all package metadata when supported")]
         all: bool,
     },
+    /// Prepare the Ruby runtime for compatibility scripts
+    SetupRuby,
     /// Run an installed formula as a command
     #[command(disable_help_flag = true)]
     Run {
