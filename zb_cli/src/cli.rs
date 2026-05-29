@@ -5,6 +5,7 @@ use std::path::PathBuf;
 #[command(name = "zb")]
 #[command(about = "Zerobrew - A fast Homebrew-compatible package installer")]
 #[command(version)]
+#[command(subcommand_precedence_over_arg = true)]
 pub struct Cli {
     #[arg(long, env = "ZEROBREW_ROOT", help = "Path to zerobrew data directory")]
     pub root: Option<PathBuf>,
@@ -317,6 +318,16 @@ mod tests {
             Commands::Prefix {
                 formulas,
                 installed: true,
+                ..
+            } if formulas == vec!["jq"]
+        ));
+
+        let cli = Cli::try_parse_from(["zb", "--prefix", "jq"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Prefix {
+                formulas,
+                installed: false,
                 ..
             } if formulas == vec!["jq"]
         ));
