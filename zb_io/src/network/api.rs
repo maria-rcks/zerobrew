@@ -72,6 +72,7 @@ pub(crate) struct FormulaIndexEntry {
 pub struct ApiClient {
     base_url: String,
     cask_base_url: String,
+    core_raw_base_url: String,
     tap_raw_base_url: String,
     client: reqwest::Client,
     cache: Option<ApiCache>,
@@ -118,6 +119,7 @@ impl ApiClient {
         Self {
             base_url,
             cask_base_url: "https://formulae.brew.sh/api/cask".to_string(),
+            core_raw_base_url: HOMEBREW_CORE_RAW_BASE.to_string(),
             tap_raw_base_url: "https://raw.githubusercontent.com".to_string(),
             client,
             cache: None,
@@ -135,6 +137,12 @@ impl ApiClient {
     #[cfg(test)]
     pub fn with_cask_base_url(mut self, cask_base_url: String) -> Self {
         self.cask_base_url = cask_base_url;
+        self
+    }
+
+    #[cfg(test)]
+    pub fn with_core_raw_base_url(mut self, core_raw_base_url: String) -> Self {
+        self.core_raw_base_url = core_raw_base_url;
         self
     }
 
@@ -161,7 +169,12 @@ impl ApiClient {
     ) -> Result<std::path::PathBuf, Error> {
         let locator = RubySourceLocator::parse(ruby_source_path);
         let source_id = locator.source_id(ruby_source_path);
-        let url = locator.to_url();
+        let url = match locator {
+            RubySourceLocator::CoreRelativePath(path) => {
+                format!("{}/{}", self.core_raw_base_url, path)
+            }
+            _ => locator.to_url(),
+        };
 
         self.fetch_formula_rb_from_url(source_id, &url, cache_dir, expected_sha256)
             .await
