@@ -173,6 +173,21 @@ mod tests {
     }
 
     #[test]
+    fn install_reinstall_and_upgrade_accept_single_common_homebrew_flag() {
+        let flags = [
+            "--force-bottle",
+            "--ignore-dependencies",
+            "--only-dependencies",
+        ];
+        for flag in flags {
+            for command in ["install", "reinstall", "upgrade"] {
+                Cli::try_parse_from(["zb", command, flag, "jq"])
+                    .unwrap_or_else(|err| panic!("{command} {flag} failed to parse: {err}"));
+            }
+        }
+    }
+
+    #[test]
     fn search_accepts_common_homebrew_filter_flags() {
         let cli = Cli::try_parse_from([
             "zb",
