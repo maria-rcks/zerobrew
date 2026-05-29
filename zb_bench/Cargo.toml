@@ -6,6 +6,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+criterion-table = "0.4.2"
 serde.workspace = true
 serde_json.workspace = true
 
