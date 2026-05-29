@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 use std::hint::black_box;
 use std::path::{Path, PathBuf};
 
-use clap::Parser;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use zb_cli::cli::Cli;
 use zb_core::formula::{
@@ -57,6 +56,7 @@ fn formula(name: &str, deps: &[String], build_deps: &[String]) -> Formula {
         keg_only: KegOnly::default(),
         keg_only_reason: None,
         build_dependencies: build_deps.to_vec(),
+        homepage: None,
         urls: Some(FormulaUrls {
             stable: Some(SourceUrl {
                 url: format!("https://example.invalid/{name}-1.0.0.tar.gz"),
