@@ -24,7 +24,7 @@ use crate::storage::blob::BlobCache;
 use crate::storage::db::Database;
 use crate::storage::store::Store;
 
-use zb_core::formula::UsesFromMacos;
+use zb_core::formula::{UsesFromMacos, Versions};
 use zb_core::{Error, Formula, InstallMethod};
 
 #[derive(serde::Deserialize)]
@@ -38,6 +38,29 @@ struct FormulaDependentsEntry {
     uses_from_macos: Vec<UsesFromMacos>,
 }
 
+#[derive(serde::Deserialize)]
+struct FormulaIndexVersionEntry {
+    name: String,
+    versions: Versions,
+    #[serde(default)]
+    revision: u32,
+}
+
+impl FormulaIndexVersionEntry {
+    fn effective_version(&self) -> String {
+        if self.revision > 0 {
+            format!("{}_{}", self.versions.stable, self.revision)
+        } else {
+            self.versions.stable.clone()
+        }
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct CaskIndexEntry {
+    token: String,
+}
+
 use bottle::dependency_cellar_path;
 
 fn formula_index_names(raw: &str) -> Result<Vec<String>, Error> {
@@ -48,6 +71,27 @@ fn formula_index_names(raw: &str) -> Result<Vec<String>, Error> {
         .collect();
     names.sort_unstable();
     Ok(names)
+}
+
+fn formula_index_versions(raw: &str) -> Result<Vec<(String, String)>, Error> {
+    let mut versions: Vec<(String, String)> =
+        serde_json::from_str::<Vec<FormulaIndexVersionEntry>>(raw)
+            .map_err(Error::network("failed to parse bulk formula index JSON"))?
+            .into_iter()
+            .map(|entry| (entry.name.clone(), entry.effective_version()))
+            .collect();
+    versions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    Ok(versions)
+}
+
+fn cask_index_tokens(raw: &str) -> Result<Vec<String>, Error> {
+    let mut tokens: Vec<String> = serde_json::from_str::<Vec<CaskIndexEntry>>(raw)
+        .map_err(Error::network("failed to parse bulk cask index JSON"))?
+        .into_iter()
+        .map(|entry| entry.token)
+        .collect();
+    tokens.sort_unstable();
+    Ok(tokens)
 }
 
 const MAX_CORRUPTION_RETRIES: usize = 3;
@@ -494,16 +538,12 @@ impl Installer {
 
     pub async fn list_cask_tokens(&self) -> Result<Vec<String>, Error> {
         let raw = self.api_client.get_all_casks_raw().await?;
-        formula_index_names(&raw)
+        cask_index_tokens(&raw)
     }
 
-    pub async fn formula_versions(&self, names: &[String]) -> Result<Vec<(String, String)>, Error> {
-        let mut versions = Vec::new();
-        for name in names {
-            let formula = self.api_client.get_formula(name).await?;
-            versions.push((formula.name.clone(), formula.effective_version()));
-        }
-        Ok(versions)
+    pub async fn list_formula_versions(&self) -> Result<Vec<(String, String)>, Error> {
+        let raw = self.api_client.get_all_formulas_raw().await?;
+        formula_index_versions(&raw)
     }
 
     pub async fn formula_dependencies(
@@ -1292,10 +1332,12 @@ mod tests {
 
         Mock::given(method("GET"))
             .and(path("/cask.json"))
-            .respond_with(
-                ResponseTemplate::new(200)
-                    .set_body_string(r#"[{"token":"visual-studio-code"},{"token":"iterm2"}]"#),
-            )
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[
+                            {"token":"visual-studio-code","name":["Visual Studio Code"]},
+                            {"token":"iterm2","name":["iTerm2"]}
+                        ]"#,
+            ))
             .mount(&mock_server)
             .await;
 
@@ -1305,7 +1347,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn formula_versions_fetches_effective_versions() {
+    async fn list_formula_versions_uses_bulk_index() {
         let mock_server = MockServer::start().await;
         let tmp = TempDir::new().unwrap();
         let root = tmp.path().join("zerobrew");
@@ -1317,25 +1359,25 @@ mod tests {
         );
 
         Mock::given(method("GET"))
-            .and(path("/formula/jq.json"))
+            .and(path("/formula.json"))
             .respond_with(ResponseTemplate::new(200).set_body_string(
-                r#"{
-                    "name":"jq",
-                    "versions":{"stable":"1.7.1"},
-                    "revision":2,
-                    "dependencies":[],
-                    "bottle":{"stable":{"files":{}}}
-                }"#,
+                r#"[
+                    {"name":"zstd","versions":{"stable":"1.5.7"}},
+                    {"name":"jq","versions":{"stable":"1.7.1"},"revision":2}
+                ]"#,
             ))
             .mount(&mock_server)
             .await;
 
-        let versions = installer
-            .formula_versions(&["jq".to_string()])
-            .await
-            .unwrap();
+        let versions = installer.list_formula_versions().await.unwrap();
 
-        assert_eq!(versions, vec![("jq".to_string(), "1.7.1_2".to_string())]);
+        assert_eq!(
+            versions,
+            vec![
+                ("jq".to_string(), "1.7.1_2".to_string()),
+                ("zstd".to_string(), "1.5.7".to_string())
+            ]
+        );
     }
 
     #[tokio::test]

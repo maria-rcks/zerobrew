@@ -3,8 +3,7 @@ pub async fn execute(
     versions: bool,
 ) -> Result<(), zb_core::Error> {
     if versions {
-        let names = installer.list_formula_names().await?;
-        for (name, version) in installer.formula_versions(&names).await? {
+        for (name, version) in installer.list_formula_versions().await? {
             println!("{name} {version}");
         }
     } else {
