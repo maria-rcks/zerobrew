@@ -88,6 +88,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             force_bottle,
             ignore_dependencies,
             only_dependencies,
+            ask,
             cask,
             formula,
             appdir,
@@ -100,6 +101,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 force_bottle,
                 ignore_dependencies,
                 only_dependencies,
+                ask,
                 &mut ui,
             )?;
             commands::install::execute(
@@ -138,6 +140,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             force_bottle,
             ignore_dependencies,
             only_dependencies,
+            ask,
             cask,
             formula,
             appdir,
@@ -150,6 +153,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 force_bottle,
                 ignore_dependencies,
                 only_dependencies,
+                ask,
                 &mut ui,
             )?;
             commands::reinstall::execute(
@@ -299,6 +303,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             force_bottle,
             ignore_dependencies,
             only_dependencies,
+            ask,
             cask,
             formula,
             appdir,
@@ -311,6 +316,7 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                 force_bottle,
                 ignore_dependencies,
                 only_dependencies,
+                ask,
                 &mut ui,
             )?;
             commands::upgrade::execute(
@@ -354,6 +360,7 @@ fn warn_ignored_install_flags(
     force_bottle: bool,
     ignore_dependencies: bool,
     only_dependencies: bool,
+    ask: bool,
     ui: &mut zb_cli::ui::StdUi,
 ) -> Result<(), zb_core::Error> {
     warn_ignored_flags(
@@ -361,6 +368,7 @@ fn warn_ignored_install_flags(
             (force_bottle, "--force-bottle"),
             (ignore_dependencies, "--ignore-dependencies"),
             (only_dependencies, "--only-dependencies"),
+            (ask, "--ask"),
         ],
         ui,
     )
