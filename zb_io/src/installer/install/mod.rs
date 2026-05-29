@@ -465,6 +465,40 @@ impl Installer {
         self.db.list_installed()
     }
 
+    pub async fn formula_dependencies(
+        &self,
+        name: &str,
+        include_build: bool,
+    ) -> Result<Vec<String>, Error> {
+        let formula = self.api_client.get_formula(name).await?;
+        let mut dependencies = formula.dependencies.clone();
+        if include_build {
+            dependencies.extend(formula.all_build_dependencies());
+            dependencies.sort_unstable();
+            dependencies.dedup();
+        }
+        Ok(dependencies)
+    }
+
+    pub async fn formula_dependents(&self, name: &str) -> Result<Vec<String>, Error> {
+        let requested = formula_token(name).to_string();
+        let bulk_raw = self.api_client.get_all_formulas_raw().await?;
+        let formulas: Vec<Formula> = serde_json::from_str(&bulk_raw)
+            .map_err(Error::network("failed to parse bulk formula JSON"))?;
+        let mut dependents: Vec<String> = formulas
+            .into_iter()
+            .filter_map(|formula| {
+                let depends_on_requested = formula
+                    .dependencies
+                    .iter()
+                    .any(|dependency| formula_token(dependency) == requested);
+                depends_on_requested.then_some(formula.name)
+            })
+            .collect();
+        dependents.sort_unstable();
+        Ok(dependents)
+    }
+
     pub async fn list_leaves(&self) -> Result<Vec<crate::storage::db::InstalledKeg>, Error> {
         let installed = self.db.list_installed()?;
         let formula_kegs: Vec<_> = installed
