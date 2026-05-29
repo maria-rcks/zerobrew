@@ -24,7 +24,14 @@ pub async fn execute(
     if !cask {
         write_missing_formula_files(installer, &paths, &formulas).await?;
     }
-    let status = Command::new(editor)
+    let mut editor_parts = editor.split_whitespace();
+    let editor_program = editor_parts
+        .next()
+        .ok_or_else(|| zb_core::Error::ExecutionError {
+            message: "no editor set; set $HOMEBREW_EDITOR or $EDITOR".to_string(),
+        })?;
+    let status = Command::new(editor_program)
+        .args(editor_parts)
         .args(&paths)
         .status()
         .map_err(zb_core::Error::exec("failed to run editor"))?;
@@ -83,11 +90,23 @@ fn edit_paths(repository: &Path, formulas: &[String], cask: bool) -> Vec<PathBuf
 }
 
 fn formula_path(repository: &Path, formula: &str) -> PathBuf {
-    let token = formula.rsplit('/').next().unwrap_or(formula);
+    let (tap_path, token) = formula_tap_path(formula);
     repository
-        .join("Library/Taps/homebrew/homebrew-core")
+        .join("Library/Taps")
+        .join(tap_path)
         .join("Formula")
         .join(format!("{token}.rb"))
+}
+
+fn formula_tap_path(formula: &str) -> (PathBuf, &str) {
+    let mut parts = formula.split('/');
+    let (Some(owner), Some(repo), Some(token), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return (PathBuf::from("homebrew/homebrew-core"), formula);
+    };
+
+    (PathBuf::from(owner).join(format!("homebrew-{repo}")), token)
 }
 
 fn cask_path(repository: &Path, cask: &str) -> PathBuf {
@@ -120,7 +139,7 @@ fn ui_error(err: std::io::Error) -> zb_core::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{edit_paths, repository_path};
+    use super::{edit_paths, formula_tap_path, repository_path};
     use std::path::Path;
 
     #[test]
@@ -129,6 +148,20 @@ mod tests {
             edit_paths(Path::new("/repo"), &["testball".to_string()], false),
             vec![Path::new(
                 "/repo/Library/Taps/homebrew/homebrew-core/Formula/testball.rb"
+            )]
+        );
+    }
+
+    #[test]
+    fn edit_paths_points_tapped_formulae_at_tap_files() {
+        assert_eq!(
+            edit_paths(
+                Path::new("/repo"),
+                &["hashicorp/tap/terraform".to_string()],
+                false,
+            ),
+            vec![Path::new(
+                "/repo/Library/Taps/hashicorp/homebrew-tap/Formula/terraform.rb"
             )]
         );
     }
@@ -165,5 +198,16 @@ mod tests {
         unsafe {
             std::env::remove_var("HOMEBREW_TEST_TMPDIR");
         }
+    }
+
+    #[test]
+    fn formula_tap_path_ignores_invalid_tap_qualified_names() {
+        assert_eq!(
+            formula_tap_path("owner/repo/token/extra"),
+            (
+                Path::new("homebrew/homebrew-core").to_path_buf(),
+                "owner/repo/token/extra"
+            )
+        );
     }
 }
