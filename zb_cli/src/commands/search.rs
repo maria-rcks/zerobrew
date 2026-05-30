@@ -7,6 +7,7 @@ pub async fn execute(
     cask: bool,
     name: bool,
     all: bool,
+    desc: bool,
 ) -> Result<(), zb_core::Error> {
     if cask && !formula {
         return Err(zb_core::Error::UnsupportedFormula {
@@ -16,7 +17,7 @@ pub async fn execute(
     }
 
     let query = text.join(" ");
-    let results = if name || all {
+    let results = if name || all || desc {
         installer.search_formula_index(&query, name && !all).await?
     } else {
         installer.suggest_formulas(&query, 20).await?

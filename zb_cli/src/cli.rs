@@ -890,7 +890,7 @@ pub enum Commands {
         eval_all: bool,
         #[arg(long, help = "Output as JSON when supported")]
         json: bool,
-        #[arg(long, help = "Show formula descriptions when supported")]
+        #[arg(long, help = "Search formula descriptions")]
         desc: bool,
         #[arg(long, help = "Search package names when supported")]
         name: bool,
