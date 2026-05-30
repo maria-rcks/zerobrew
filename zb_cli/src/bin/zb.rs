@@ -55,10 +55,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         return commands::command_list::execute(quiet, include_aliases);
     }
 
-    if let Commands::SetupRuby = cli.command {
-        return Ok(());
-    }
-
     if let Commands::Prefix {
         formulas,
         installed: _,
@@ -82,7 +78,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Init { .. } => unreachable!(),
         Commands::Completion { .. } => unreachable!(),
         Commands::Commands { .. } => unreachable!(),
-        Commands::SetupRuby => unreachable!(),
         Commands::Shellenv { .. } => unreachable!(),
         Commands::Prefix { .. } => unreachable!(),
         Commands::Cellar { .. } => unreachable!(),
