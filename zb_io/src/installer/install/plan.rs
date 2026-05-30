@@ -15,8 +15,26 @@ impl Installer {
         names: &[String],
         build_from_source: bool,
     ) -> Result<InstallPlan, Error> {
-        let formulas = self.fetch_all_formulas(names, build_from_source).await?;
-        let ordered = zb_core::resolve_closure(names, &formulas)?;
+        self.plan_with_behavior(names, build_from_source, false, false)
+            .await
+    }
+
+    pub async fn plan_with_behavior(
+        &self,
+        names: &[String],
+        build_from_source: bool,
+        ignore_dependencies: bool,
+        only_dependencies: bool,
+    ) -> Result<InstallPlan, Error> {
+        let formulas = self
+            .fetch_all_formulas(
+                names,
+                build_from_source,
+                ignore_dependencies,
+                only_dependencies,
+            )
+            .await?;
+        let ordered = zb_core::resolve_closure_with_options(names, &formulas, only_dependencies)?;
 
         let mut items = Vec::with_capacity(ordered.len());
         for install_name in ordered {
@@ -41,6 +59,8 @@ impl Installer {
         &self,
         names: &[String],
         build_from_source: bool,
+        ignore_dependencies: bool,
+        only_dependencies: bool,
     ) -> Result<BTreeMap<String, Formula>, Error> {
         use std::collections::HashSet;
 
@@ -84,7 +104,10 @@ impl Installer {
                 }
 
                 let method = self.install_method_for_formula(&formula, build_from_source)?;
-                if !self.installed_formula_is_current(&batch[i], &formula, &method) {
+                if !ignore_dependencies
+                    && (only_dependencies
+                        || !self.installed_formula_is_current(&batch[i], &formula, &method))
+                {
                     for dep in &formula.dependencies {
                         if !fetched.contains(dep) && !to_fetch.contains(dep) {
                             to_fetch.push(dep.clone());
@@ -546,6 +569,107 @@ end
         let requests = mock_server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/formula/installed.json");
+    }
+
+    #[tokio::test]
+    async fn only_dependencies_fetches_deps_for_installed_roots() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let installed_sha = "1111111111111111111111111111111111111111111111111111111111111111";
+        let dep_sha = "2222222222222222222222222222222222222222222222222222222222222222";
+        let installed_json = format!(
+            r#"{{
+                "name": "installed",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": ["slowdep"],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{}": {{
+                                "url": "https://example.com/installed.bottle.tar.gz",
+                                "sha256": "{}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag, installed_sha
+        );
+        let dep_json = bottle_formula_json("slowdep", "2.0.0", dep_sha);
+        mount_formula(&mock_server, "installed", installed_json).await;
+        mount_formula(&mock_server, "slowdep", dep_json).await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+        record_installed(&mut installer, "installed", "1.0.0", installed_sha);
+        create_installed_keg(&installer, "installed", "1.0.0");
+
+        let plan = installer
+            .plan_with_behavior(&["installed".to_string()], false, false, true)
+            .await
+            .unwrap();
+
+        let planned_names: Vec<&str> = plan
+            .items
+            .iter()
+            .map(|item| item.install_name.as_str())
+            .collect();
+        assert_eq!(planned_names, vec!["slowdep"]);
+        let requests = mock_server.received_requests().await.unwrap();
+        let request_paths: Vec<&str> = requests.iter().map(|request| request.url.path()).collect();
+        assert_eq!(
+            request_paths,
+            vec!["/formula/installed.json", "/formula/slowdep.json"]
+        );
+    }
+
+    #[tokio::test]
+    async fn ignore_dependencies_plans_only_root() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let tag = get_test_bottle_tag();
+        let root_sha = "3333333333333333333333333333333333333333333333333333333333333333";
+        let formula_json = format!(
+            r#"{{
+                "name": "root",
+                "versions": {{ "stable": "1.0.0" }},
+                "dependencies": ["slowdep"],
+                "bottle": {{
+                    "stable": {{
+                        "files": {{
+                            "{}": {{
+                                "url": "https://example.com/root.bottle.tar.gz",
+                                "sha256": "{}"
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#,
+            tag, root_sha
+        );
+        mount_formula(&mock_server, "root", formula_json).await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+
+        let plan = installer
+            .plan_with_behavior(&["root".to_string()], false, true, false)
+            .await
+            .unwrap();
+
+        let planned_names: Vec<&str> = plan
+            .items
+            .iter()
+            .map(|item| item.install_name.as_str())
+            .collect();
+        assert_eq!(planned_names, vec!["root"]);
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/formula/root.json");
     }
 
     #[tokio::test]

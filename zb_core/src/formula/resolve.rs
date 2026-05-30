@@ -5,6 +5,14 @@ pub fn resolve_closure(
     roots: &[String],
     formulas: &BTreeMap<String, Formula>,
 ) -> Result<Vec<String>, Error> {
+    resolve_closure_with_options(roots, formulas, false)
+}
+
+pub fn resolve_closure_with_options(
+    roots: &[String],
+    formulas: &BTreeMap<String, Formula>,
+    only_dependencies: bool,
+) -> Result<Vec<String>, Error> {
     let name_to_idx: HashMap<&str, usize> = formulas
         .keys()
         .enumerate()
@@ -13,7 +21,7 @@ pub fn resolve_closure(
     let idx_to_name: Vec<&str> = formulas.keys().map(|k| k.as_str()).collect();
     let n = idx_to_name.len();
 
-    let closure = compute_closure(roots, formulas, &name_to_idx)?;
+    let closure = compute_closure(roots, formulas, &name_to_idx, only_dependencies)?;
 
     let mut indegree = vec![0u32; n];
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -72,6 +80,7 @@ fn compute_closure(
     roots: &[String],
     formulas: &BTreeMap<String, Formula>,
     name_to_idx: &HashMap<&str, usize>,
+    only_dependencies: bool,
 ) -> Result<BTreeSet<usize>, Error> {
     let mut closure = BTreeSet::new();
     let mut stack: Vec<usize> = Vec::with_capacity(roots.len());
@@ -80,7 +89,16 @@ fn compute_closure(
         let &idx = name_to_idx
             .get(root.as_str())
             .ok_or_else(|| Error::MissingFormula { name: root.clone() })?;
-        stack.push(idx);
+        if only_dependencies {
+            let formula = &formulas[root];
+            for dep in &formula.dependencies {
+                if let Some(&di) = name_to_idx.get(dep.as_str()) {
+                    stack.push(di);
+                }
+            }
+        } else {
+            stack.push(idx);
+        }
     }
 
     let idx_to_name: Vec<&str> = formulas.keys().map(|k| k.as_str()).collect();
@@ -190,5 +208,18 @@ mod tests {
         let order = resolve_closure(&["git".to_string()], &formulas).unwrap();
         // Should successfully resolve with just git and gettext
         assert_eq!(order, vec!["gettext", "git"]);
+    }
+
+    #[test]
+    fn resolves_only_dependencies_without_roots() {
+        let mut formulas = BTreeMap::new();
+        formulas.insert("foo".to_string(), formula("foo", &["bar", "baz"]));
+        formulas.insert("bar".to_string(), formula("bar", &["qux"]));
+        formulas.insert("baz".to_string(), formula("baz", &[]));
+        formulas.insert("qux".to_string(), formula("qux", &[]));
+
+        let order = resolve_closure_with_options(&["foo".to_string()], &formulas, true).unwrap();
+
+        assert_eq!(order, vec!["baz", "qux", "bar"]);
     }
 }
