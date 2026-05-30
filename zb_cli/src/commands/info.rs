@@ -1,7 +1,17 @@
 use chrono::{DateTime, Local};
 use console::style;
 
-pub fn execute(installer: &mut zb_io::Installer, formula: String) -> Result<(), zb_core::Error> {
+pub async fn execute(
+    installer: &mut zb_io::Installer,
+    formula: String,
+    show_versions: bool,
+) -> Result<(), zb_core::Error> {
+    if show_versions {
+        let formula_info = installer.formula_metadata(&formula).await?;
+        println!("{} {}", formula_info.name, formula_info.effective_version());
+        return Ok(());
+    }
+
     if let Some(keg) = installer.get_installed(&formula) {
         print_field("Name:", style(&keg.name).bold());
         print_field("Version:", &keg.version);

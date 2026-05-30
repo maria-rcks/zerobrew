@@ -93,6 +93,34 @@ fn formula_index_versions(raw: &str) -> Result<Vec<(String, String)>, Error> {
     Ok(versions)
 }
 
+fn formula_index_matches(raw: &str, query: &str, names_only: bool) -> Result<Vec<String>, Error> {
+    let terms: Vec<String> = query
+        .split_whitespace()
+        .map(str::to_ascii_lowercase)
+        .collect();
+    let mut matches: Vec<String> = serde_json::from_str::<Vec<FormulaIndexEntry>>(raw)
+        .map_err(Error::network("failed to parse bulk formula index JSON"))?
+        .into_iter()
+        .filter_map(|entry| {
+            let name = entry.name?;
+            let mut haystack = vec![name.clone()];
+            haystack.extend(entry.aliases);
+            haystack.extend(entry.oldnames);
+            if !names_only && let Some(desc) = entry.desc {
+                haystack.push(desc);
+            }
+            let haystack = haystack.join(" ").to_ascii_lowercase();
+            terms
+                .iter()
+                .all(|term| haystack.contains(term))
+                .then_some(name)
+        })
+        .collect();
+    matches.sort_unstable();
+    matches.dedup();
+    Ok(matches)
+}
+
 fn cask_index_tokens(raw: &str) -> Result<Vec<String>, Error> {
     let mut tokens: Vec<String> = serde_json::from_str::<Vec<CaskIndexEntry>>(raw)
         .map_err(Error::network("failed to parse bulk cask index JSON"))?
@@ -554,6 +582,15 @@ impl Installer {
     pub async fn list_formula_versions(&self) -> Result<Vec<(String, String)>, Error> {
         let raw = self.api_client.get_all_formulas_raw().await?;
         formula_index_versions(&raw)
+    }
+
+    pub async fn search_formula_index(
+        &self,
+        query: &str,
+        names_only: bool,
+    ) -> Result<Vec<String>, Error> {
+        let raw = self.api_client.get_all_formulas_raw().await?;
+        formula_index_matches(&raw, query, names_only)
     }
 
     pub async fn formula_dependencies(
@@ -1512,6 +1549,40 @@ mod tests {
                 ("zstd".to_string(), "1.5.7".to_string())
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn search_formula_index_uses_names_or_metadata() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"[
+                    {"name":"ripgrep","aliases":["rg"],"desc":"Search files quickly"},
+                    {"name":"fd","desc":"Find entries"},
+                    {"name":"zstd","desc":"Compression tool"}
+                ]"#,
+            ))
+            .mount(&mock_server)
+            .await;
+
+        let name_matches = installer.search_formula_index("rg", true).await.unwrap();
+        let metadata_matches = installer
+            .search_formula_index("search files", false)
+            .await
+            .unwrap();
+
+        assert_eq!(name_matches, vec!["ripgrep"]);
+        assert_eq!(metadata_matches, vec!["ripgrep"]);
     }
 
     #[tokio::test]

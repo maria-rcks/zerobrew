@@ -5,6 +5,8 @@ pub async fn execute(
     text: Vec<String>,
     formula: bool,
     cask: bool,
+    name: bool,
+    all: bool,
 ) -> Result<(), zb_core::Error> {
     if cask && !formula {
         return Err(zb_core::Error::UnsupportedFormula {
@@ -14,7 +16,11 @@ pub async fn execute(
     }
 
     let query = text.join(" ");
-    let results = installer.suggest_formulas(&query, 20).await?;
+    let results = if name || all {
+        installer.search_formula_index(&query, name).await?
+    } else {
+        installer.suggest_formulas(&query, 20).await?
+    };
 
     if results.is_empty() {
         return Err(zb_core::Error::MissingFormula { name: query });
