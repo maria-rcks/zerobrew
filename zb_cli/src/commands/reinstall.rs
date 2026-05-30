@@ -123,12 +123,13 @@ mod tests {
     fn confirm_reinstall_defaults_to_cancel() {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ui = Ui::with_writers(&mut stdout, &mut stderr);
         let mut input = Cursor::new("\n");
         let names = vec!["jq".to_string()];
 
-        let accepted = confirm_reinstall_with_reader(&mut ui, &names, &mut input).unwrap();
-        drop(ui);
+        let accepted = {
+            let mut ui = Ui::with_writers(&mut stdout, &mut stderr);
+            confirm_reinstall_with_reader(&mut ui, &names, &mut input).unwrap()
+        };
 
         assert!(!accepted);
         let output = String::from_utf8(stdout).unwrap();
@@ -141,12 +142,13 @@ mod tests {
     fn confirm_reinstall_accepts_yes() {
         let mut stdout = Vec::new();
         let mut stderr = Vec::new();
-        let mut ui = Ui::with_writers(&mut stdout, &mut stderr);
         let mut input = Cursor::new("y\n");
         let names = vec!["jq".to_string(), "ripgrep".to_string()];
 
-        let accepted = confirm_reinstall_with_reader(&mut ui, &names, &mut input).unwrap();
-        drop(ui);
+        let accepted = {
+            let mut ui = Ui::with_writers(&mut stdout, &mut stderr);
+            confirm_reinstall_with_reader(&mut ui, &names, &mut input).unwrap()
+        };
 
         assert!(accepted);
         let output = String::from_utf8(stdout).unwrap();
