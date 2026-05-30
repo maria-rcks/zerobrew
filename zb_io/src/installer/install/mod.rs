@@ -98,6 +98,9 @@ fn formula_index_matches(raw: &str, query: &str, names_only: bool) -> Result<Vec
         .split_whitespace()
         .map(str::to_ascii_lowercase)
         .collect();
+    if terms.is_empty() {
+        return Ok(Vec::new());
+    }
     let mut matches: Vec<String> = serde_json::from_str::<Vec<FormulaIndexEntry>>(raw)
         .map_err(Error::network("failed to parse bulk formula index JSON"))?
         .into_iter()
@@ -1583,6 +1586,32 @@ mod tests {
 
         assert_eq!(name_matches, vec!["ripgrep"]);
         assert_eq!(metadata_matches, vec!["ripgrep"]);
+    }
+
+    #[tokio::test]
+    async fn search_formula_index_empty_query_returns_no_matches() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = create_local_installer_with_api(
+            &root,
+            &prefix,
+            format!("{}/formula", mock_server.uri()),
+        );
+
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_string(r#"[{"name":"ripgrep","desc":"Search files quickly"}]"#),
+            )
+            .mount(&mock_server)
+            .await;
+
+        let matches = installer.search_formula_index("   ", false).await.unwrap();
+
+        assert!(matches.is_empty());
     }
 
     #[tokio::test]
