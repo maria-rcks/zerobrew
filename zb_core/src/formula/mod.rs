@@ -6,7 +6,7 @@ pub use bottle::{SelectedBottle, compatible_codenames, select_bottle, select_bot
 
 #[cfg(target_os = "macos")]
 pub use bottle::macos_major_version;
-pub use resolve::resolve_closure;
+pub use resolve::{resolve_closure, resolve_closure_with_options};
 pub use types::{
     Bottle, BottleFile, BottleStable, Formula, FormulaUrls, KegOnly, KegOnlyReason,
     RubySourceChecksum, SourceUrl, UsesFromMacos, Versions, effective_version,
