@@ -7,8 +7,7 @@ pub async fn execute(
     show_versions: bool,
 ) -> Result<(), zb_core::Error> {
     if show_versions {
-        let formula_info = installer.formula_metadata(&formula).await?;
-        println!("{} {}", formula_info.name, formula_info.effective_version());
+        print_versions(installer, &formula).await?;
         return Ok(());
     }
 
@@ -21,6 +20,15 @@ pub async fn execute(
         println!("Formula '{}' is not installed.", formula);
     }
 
+    Ok(())
+}
+
+async fn print_versions(
+    installer: &mut zb_io::Installer,
+    formula: &str,
+) -> Result<(), zb_core::Error> {
+    let formula_info = installer.formula_metadata(formula).await?;
+    println!("{} {}", formula_info.name, formula_info.effective_version());
     Ok(())
 }
 
@@ -65,7 +73,37 @@ fn format_timestamp(timestamp: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::store_key_prefix;
+    use std::fs;
+
+    use super::{print_versions, store_key_prefix};
+    use tempfile::TempDir;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+    use zb_io::{ApiClient, BlobCache, Cellar, Database, Installer, Linker, Store};
+
+    fn test_installer(
+        root: &std::path::Path,
+        prefix: &std::path::Path,
+        api_url: String,
+    ) -> Installer {
+        fs::create_dir_all(root.join("db")).unwrap();
+        let api_client = ApiClient::with_base_url(api_url).expect("test API URL should be valid");
+        let blob_cache = BlobCache::new(&root.join("cache")).unwrap();
+        let store = Store::new(root).unwrap();
+        let cellar = Cellar::new(root).unwrap();
+        let linker = Linker::new(prefix).unwrap();
+        let db = Database::open(&root.join("db/zb.sqlite3")).unwrap();
+        Installer::new(
+            api_client,
+            blob_cache,
+            store,
+            cellar,
+            linker,
+            db,
+            prefix.to_path_buf(),
+            root.join("locks"),
+        )
+    }
 
     #[test]
     fn store_key_prefix_handles_short_keys() {
@@ -75,5 +113,29 @@ mod tests {
     #[test]
     fn store_key_prefix_truncates_long_keys() {
         assert_eq!(store_key_prefix("1234567890abcdef"), "1234567890ab");
+    }
+
+    #[tokio::test]
+    async fn print_versions_fetches_formula_metadata() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let mut installer =
+            test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+
+        Mock::given(method("GET"))
+            .and(path("/formula/jq.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(
+                r#"{"name":"jq","versions":{"stable":"1.7.1"},"revision":2,"dependencies":[],"bottle":{"stable":{"files":{}}}}"#,
+            ))
+            .mount(&mock_server)
+            .await;
+
+        print_versions(&mut installer, "jq").await.unwrap();
+
+        let requests = mock_server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].url.path(), "/formula/jq.json");
     }
 }

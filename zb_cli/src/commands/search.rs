@@ -17,7 +17,7 @@ pub async fn execute(
 
     let query = text.join(" ");
     let results = if name || all {
-        installer.search_formula_index(&query, name).await?
+        installer.search_formula_index(&query, name && !all).await?
     } else {
         installer.suggest_formulas(&query, 20).await?
     };
