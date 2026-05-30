@@ -66,6 +66,8 @@ pub(crate) struct FormulaIndexEntry {
     pub(crate) aliases: Vec<String>,
     #[serde(default)]
     pub(crate) oldnames: Vec<String>,
+    #[serde(default)]
+    pub(crate) desc: Option<String>,
 }
 
 #[derive(Debug)]
