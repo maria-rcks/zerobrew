@@ -263,16 +263,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             greedy_auto_updates: _,
             greedy_latest: _,
         } => commands::outdated::execute(&mut installer, cli.quiet, cli.verbose > 0, json).await,
-        Commands::Pin {
-            formulas,
-            formula: _,
-            cask: _,
-        }
-        | Commands::Unpin {
-            formulas,
-            formula: _,
-            cask: _,
-        } => commands::pin::execute(formulas),
         Commands::Options {
             formulas,
             compact,

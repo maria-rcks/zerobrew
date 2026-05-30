@@ -243,29 +243,6 @@ mod tests {
     }
 
     #[test]
-    fn pin_and_unpin_parse_homebrew_forms() {
-        let cli = Cli::try_parse_from(["zb", "pin", "--formula", "jq"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::Pin {
-                formulas,
-                formula: true,
-                cask: false,
-            } if formulas == vec!["jq"]
-        ));
-
-        let cli = Cli::try_parse_from(["zb", "unpin", "--cask", "iterm2"]).unwrap();
-        assert!(matches!(
-            cli.command,
-            Commands::Unpin {
-                formulas,
-                formula: false,
-                cask: true,
-            } if formulas == vec!["iterm2"]
-        ));
-    }
-
-    #[test]
     fn uses_accepts_common_homebrew_flags() {
         let cli = Cli::try_parse_from([
             "zb",
@@ -929,24 +906,6 @@ pub enum Commands {
         greedy_auto_updates: bool,
         #[arg(long, help = "Show latest-version casks when supported")]
         greedy_latest: bool,
-    },
-    /// Pin installed packages to their current versions
-    Pin {
-        #[arg(required = true, num_args = 1.., help = "Packages to pin")]
-        formulas: Vec<String>,
-        #[arg(long, conflicts_with = "cask", help = "Treat packages as formulae")]
-        formula: bool,
-        #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
-        cask: bool,
-    },
-    /// Unpin packages so they can be upgraded
-    Unpin {
-        #[arg(required = true, num_args = 1.., help = "Packages to unpin")]
-        formulas: Vec<String>,
-        #[arg(long, conflicts_with = "cask", help = "Treat packages as formulae")]
-        formula: bool,
-        #[arg(long, conflicts_with = "formula", help = "Treat packages as casks")]
-        cask: bool,
     },
     /// Show install options for formulae
     Options {
