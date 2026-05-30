@@ -19,7 +19,6 @@ pub mod migrate;
 pub mod missing;
 pub mod options;
 pub mod outdated;
-pub mod pin;
 pub mod prefix;
 pub mod reinstall;
 pub mod reset;
