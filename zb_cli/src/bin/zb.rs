@@ -256,8 +256,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             eval_all: _,
             analytics: _,
             json: _,
-            show_versions: _,
-        } => commands::info::execute(&mut installer, formula),
+            show_versions,
+        } => commands::info::execute(&mut installer, formula, show_versions).await,
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer),
         Commands::Outdated {
@@ -364,9 +364,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             eval_all: _,
             json: _,
             desc: _,
-            name: _,
-            all: _,
-        } => commands::search::execute(&mut installer, text, formula, cask).await,
+            name,
+            all,
+        } => commands::search::execute(&mut installer, text, formula, cask, name, all).await,
         Commands::Reset { yes } => commands::reset::execute(&root, &prefix, yes, &mut ui),
         Commands::Run { formula, args } => {
             commands::run::execute(&mut installer, formula, args).await
