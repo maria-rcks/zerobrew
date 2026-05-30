@@ -445,7 +445,6 @@ mod tests {
             let cli = Cli::try_parse_from([
                 "zb",
                 command,
-                "--force-bottle",
                 "--ignore-dependencies",
                 "--only-dependencies",
                 "--ask",
@@ -455,19 +454,16 @@ mod tests {
             assert!(matches!(
                 cli.command,
                 Commands::Install {
-                    force_bottle: true,
                     ignore_dependencies: true,
                     only_dependencies: true,
                     ask: true,
                     ..
                 } | Commands::Reinstall {
-                    force_bottle: true,
                     ignore_dependencies: true,
                     only_dependencies: true,
                     ask: true,
                     ..
                 } | Commands::Upgrade {
-                    force_bottle: true,
                     ignore_dependencies: true,
                     only_dependencies: true,
                     ask: true,
@@ -479,12 +475,7 @@ mod tests {
 
     #[test]
     fn install_reinstall_and_upgrade_accept_single_common_homebrew_flag() {
-        let flags = [
-            "--force-bottle",
-            "--ignore-dependencies",
-            "--only-dependencies",
-            "--ask",
-        ];
+        let flags = ["--ignore-dependencies", "--only-dependencies", "--ask"];
         for flag in flags {
             for command in ["install", "reinstall", "upgrade"] {
                 Cli::try_parse_from(["zb", command, flag, "jq"])
@@ -585,8 +576,6 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's', help = "Build from source instead of using bottles")]
         build_from_source: bool,
-        #[arg(long, help = "Install from bottles only")]
-        force_bottle: bool,
         #[arg(long, help = "Ignore dependencies when installing formulas")]
         ignore_dependencies: bool,
         #[arg(long, help = "Install only missing dependencies")]
@@ -651,8 +640,6 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's', help = "Build from source instead of using bottles")]
         build_from_source: bool,
-        #[arg(long, help = "Install from bottles only")]
-        force_bottle: bool,
         #[arg(long, help = "Ignore dependencies when installing formulas")]
         ignore_dependencies: bool,
         #[arg(long, help = "Install only missing dependencies")]
@@ -685,8 +672,6 @@ pub enum Commands {
         no_link: bool,
         #[arg(long, short = 's', help = "Build from source instead of using bottles")]
         build_from_source: bool,
-        #[arg(long, help = "Install from bottles only")]
-        force_bottle: bool,
         #[arg(long, help = "Ignore dependencies when installing formulas")]
         ignore_dependencies: bool,
         #[arg(long, help = "Install only missing dependencies")]
