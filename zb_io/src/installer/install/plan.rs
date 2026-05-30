@@ -15,8 +15,21 @@ impl Installer {
         names: &[String],
         build_from_source: bool,
     ) -> Result<InstallPlan, Error> {
-        let formulas = self.fetch_all_formulas(names, build_from_source).await?;
-        let ordered = zb_core::resolve_closure(names, &formulas)?;
+        self.plan_with_behavior(names, build_from_source, false, false)
+            .await
+    }
+
+    pub async fn plan_with_behavior(
+        &self,
+        names: &[String],
+        build_from_source: bool,
+        ignore_dependencies: bool,
+        only_dependencies: bool,
+    ) -> Result<InstallPlan, Error> {
+        let formulas = self
+            .fetch_all_formulas(names, build_from_source, ignore_dependencies)
+            .await?;
+        let ordered = zb_core::resolve_closure_with_options(names, &formulas, only_dependencies)?;
 
         let mut items = Vec::with_capacity(ordered.len());
         for install_name in ordered {
@@ -41,6 +54,7 @@ impl Installer {
         &self,
         names: &[String],
         build_from_source: bool,
+        ignore_dependencies: bool,
     ) -> Result<BTreeMap<String, Formula>, Error> {
         use std::collections::HashSet;
 
@@ -84,7 +98,9 @@ impl Installer {
                 }
 
                 let method = self.install_method_for_formula(&formula, build_from_source)?;
-                if !self.installed_formula_is_current(&batch[i], &formula, &method) {
+                if !ignore_dependencies
+                    && !self.installed_formula_is_current(&batch[i], &formula, &method)
+                {
                     for dep in &formula.dependencies {
                         if !fetched.contains(dep) && !to_fetch.contains(dep) {
                             to_fetch.push(dep.clone());
