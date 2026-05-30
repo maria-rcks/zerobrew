@@ -363,10 +363,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             installed: _,
             eval_all: _,
             json: _,
-            desc: _,
+            desc,
             name,
             all,
-        } => commands::search::execute(&mut installer, text, formula, cask, name, all).await,
+        } => commands::search::execute(&mut installer, text, formula, cask, name, all, desc).await,
         Commands::Reset { yes } => commands::reset::execute(&root, &prefix, yes, &mut ui),
         Commands::Run { formula, args } => {
             commands::run::execute(&mut installer, formula, args).await
