@@ -96,7 +96,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             no_binaries,
             force,
         } => {
-            warn_ignored_install_flags(ignore_dependencies, only_dependencies, ask, &mut ui)?;
             commands::install::execute(
                 &mut installer,
                 commands::install::InstallRequest {
@@ -303,7 +302,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             no_binaries,
             force,
         } => {
-            warn_ignored_install_flags(ignore_dependencies, only_dependencies, ask, &mut ui)?;
             commands::upgrade::execute(
                 &mut installer,
                 commands::upgrade::UpgradeRequest {
