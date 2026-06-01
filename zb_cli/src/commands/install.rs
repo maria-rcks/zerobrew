@@ -16,6 +16,9 @@ pub struct InstallRequest {
     pub formulas: Vec<String>,
     pub no_link: bool,
     pub build_from_source: bool,
+    pub ignore_dependencies: bool,
+    pub only_dependencies: bool,
+    pub ask: bool,
     pub cask: bool,
     pub formula: bool,
     pub appdir: Option<PathBuf>,
@@ -67,7 +70,12 @@ pub async fn execute(
 
     if !normalized_names.is_empty() {
         let plan = match installer
-            .plan_with_options(&normalized_names, request.build_from_source)
+            .plan_with_behavior(
+                &normalized_names,
+                request.build_from_source,
+                request.ignore_dependencies,
+                request.only_dependencies,
+            )
             .await
         {
             Ok(p) => p,
@@ -95,6 +103,16 @@ pub async fn execute(
                 style(&item.formula.versions.stable).dim()
             ))
             .map_err(ui_error)?;
+        }
+
+        if request.ask {
+            let answer = ui
+                .prompt_yes_no("Install these formulae? [y/N]", PromptDefault::No)
+                .map_err(ui_error)?;
+            if !answer {
+                ui.println("Install cancelled.").map_err(ui_error)?;
+                return Ok(());
+            }
         }
 
         ui.heading("Downloading and installing formulas...")

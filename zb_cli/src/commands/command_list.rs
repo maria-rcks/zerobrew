@@ -32,7 +32,6 @@ const BUILT_IN_COMMANDS: &[&str] = &[
     "reset",
     "run",
     "search",
-    "setup-ruby",
     "shellenv",
     "uninstall",
     "unlink",

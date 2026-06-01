@@ -55,10 +55,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         return commands::command_list::execute(quiet, include_aliases);
     }
 
-    if let Commands::SetupRuby = cli.command {
-        return Ok(());
-    }
-
     if let Commands::Prefix {
         formulas,
         installed: _,
@@ -82,7 +78,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
         Commands::Init { .. } => unreachable!(),
         Commands::Completion { .. } => unreachable!(),
         Commands::Commands { .. } => unreachable!(),
-        Commands::SetupRuby => unreachable!(),
         Commands::Shellenv { .. } => unreachable!(),
         Commands::Prefix { .. } => unreachable!(),
         Commands::Cellar { .. } => unreachable!(),
@@ -101,13 +96,15 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             no_binaries,
             force,
         } => {
-            warn_ignored_install_flags(ignore_dependencies, only_dependencies, ask, &mut ui)?;
             commands::install::execute(
                 &mut installer,
                 commands::install::InstallRequest {
                     formulas,
                     no_link,
                     build_from_source,
+                    ignore_dependencies,
+                    only_dependencies,
+                    ask,
                     cask,
                     formula,
                     appdir,
@@ -242,8 +239,8 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             eval_all: _,
             analytics: _,
             json: _,
-            show_versions: _,
-        } => commands::info::execute(&mut installer, formula),
+            show_versions,
+        } => commands::info::execute(&mut installer, formula, show_versions).await,
         Commands::Gc => commands::gc::execute(&mut installer),
         Commands::Update => commands::update::execute(&mut installer),
         Commands::Outdated {
@@ -315,7 +312,6 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             no_binaries,
             force,
         } => {
-            warn_ignored_install_flags(ignore_dependencies, only_dependencies, ask, &mut ui)?;
             commands::upgrade::execute(
                 &mut installer,
                 commands::upgrade::UpgradeRequest {
@@ -323,6 +319,9 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
                     dry_run,
                     no_link,
                     build_from_source,
+                    ignore_dependencies,
+                    only_dependencies,
+                    ask,
                     cask,
                     formula,
                     appdir,
@@ -342,10 +341,10 @@ async fn run(cli: Cli) -> Result<(), zb_core::Error> {
             installed: _,
             eval_all: _,
             json: _,
-            desc: _,
-            name: _,
-            all: _,
-        } => commands::search::execute(&mut installer, text, formula, cask).await,
+            desc,
+            name,
+            all,
+        } => commands::search::execute(&mut installer, text, formula, cask, name, all, desc).await,
         Commands::Reset { yes } => commands::reset::execute(&root, &prefix, yes, &mut ui),
         Commands::Run { formula, args } => {
             commands::run::execute(&mut installer, formula, args).await
