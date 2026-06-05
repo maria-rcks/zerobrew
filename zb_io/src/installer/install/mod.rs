@@ -24,7 +24,9 @@ use crate::storage::blob::BlobCache;
 use crate::storage::db::Database;
 use crate::storage::store::Store;
 
-use zb_core::formula::{UsesFromMacos, Versions, effective_version};
+#[cfg(not(target_os = "macos"))]
+use zb_core::formula::UsesFromMacos;
+use zb_core::formula::{Versions, effective_version};
 use zb_core::{Error, Formula, InstallMethod};
 
 #[derive(serde::Deserialize)]
@@ -34,6 +36,7 @@ struct FormulaDependentsEntry {
     dependencies: Vec<String>,
     #[serde(default)]
     build_dependencies: Vec<String>,
+    #[cfg(not(target_os = "macos"))]
     #[serde(default)]
     uses_from_macos: Vec<UsesFromMacos>,
 }
