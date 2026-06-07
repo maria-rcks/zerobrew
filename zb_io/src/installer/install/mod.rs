@@ -16,7 +16,7 @@ use zb_core::formula_token;
 
 use crate::cellar::link::Linker;
 use crate::cellar::materialize::Cellar;
-use crate::network::api::{ApiClient, FormulaIndexEntry};
+use crate::network::api::ApiClient;
 use crate::network::cache::ApiCache;
 use crate::network::download::{DownloadProgressCallback, DownloadRequest, ParallelDownloader};
 use crate::progress::{InstallProgress, ProgressCallback};
@@ -26,7 +26,6 @@ use crate::storage::store::Store;
 
 #[cfg(not(target_os = "macos"))]
 use zb_core::formula::UsesFromMacos;
-use zb_core::formula::{Versions, effective_version};
 use zb_core::{Error, Formula, InstallMethod};
 
 #[derive(serde::Deserialize)]
@@ -39,22 +38,6 @@ struct FormulaDependentsEntry {
     #[cfg(not(target_os = "macos"))]
     #[serde(default)]
     uses_from_macos: Vec<UsesFromMacos>,
-}
-
-#[derive(serde::Deserialize)]
-struct FormulaIndexVersionEntry {
-    name: Option<String>,
-    versions: Option<Versions>,
-    #[serde(default)]
-    revision: u32,
-}
-
-impl FormulaIndexVersionEntry {
-    fn into_version(self) -> Option<(String, String)> {
-        let name = self.name?;
-        let stable = self.versions?.stable;
-        Some((name, effective_version(&stable, self.revision)))
-    }
 }
 
 #[derive(serde::Deserialize)]
@@ -74,58 +57,6 @@ impl CaskIndexEntry {
 }
 
 use bottle::dependency_cellar_path;
-
-fn formula_index_names(raw: &str) -> Result<Vec<String>, Error> {
-    let mut names: Vec<String> = serde_json::from_str::<Vec<FormulaIndexEntry>>(raw)
-        .map_err(Error::network("failed to parse bulk index JSON"))?
-        .into_iter()
-        .filter_map(|entry| entry.name)
-        .collect();
-    names.sort_unstable();
-    Ok(names)
-}
-
-fn formula_index_versions(raw: &str) -> Result<Vec<(String, String)>, Error> {
-    let mut versions: Vec<(String, String)> =
-        serde_json::from_str::<Vec<FormulaIndexVersionEntry>>(raw)
-            .map_err(Error::network("failed to parse bulk formula index JSON"))?
-            .into_iter()
-            .filter_map(FormulaIndexVersionEntry::into_version)
-            .collect();
-    versions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    Ok(versions)
-}
-
-fn formula_index_matches(raw: &str, query: &str, names_only: bool) -> Result<Vec<String>, Error> {
-    let terms: Vec<String> = query
-        .split_whitespace()
-        .map(str::to_ascii_lowercase)
-        .collect();
-    if terms.is_empty() {
-        return Ok(Vec::new());
-    }
-    let mut matches: Vec<String> = serde_json::from_str::<Vec<FormulaIndexEntry>>(raw)
-        .map_err(Error::network("failed to parse bulk formula index JSON"))?
-        .into_iter()
-        .filter_map(|entry| {
-            let name = entry.name?;
-            let mut haystack = vec![name.clone()];
-            haystack.extend(entry.aliases);
-            haystack.extend(entry.oldnames);
-            if !names_only && let Some(desc) = entry.desc {
-                haystack.push(desc);
-            }
-            let haystack = haystack.join(" ").to_ascii_lowercase();
-            terms
-                .iter()
-                .all(|term| haystack.contains(term))
-                .then_some(name)
-        })
-        .collect();
-    matches.sort_unstable();
-    matches.dedup();
-    Ok(matches)
-}
 
 fn cask_index_tokens(raw: &str) -> Result<Vec<String>, Error> {
     let mut tokens: Vec<String> = serde_json::from_str::<Vec<CaskIndexEntry>>(raw)
@@ -576,8 +507,7 @@ impl Installer {
     }
 
     pub async fn list_formula_names(&self) -> Result<Vec<String>, Error> {
-        let raw = self.api_client.get_all_formulas_raw().await?;
-        formula_index_names(&raw)
+        Ok(self.api_client.formula_index().await?.names())
     }
 
     pub async fn list_cask_tokens(&self) -> Result<Vec<String>, Error> {
@@ -586,8 +516,7 @@ impl Installer {
     }
 
     pub async fn list_formula_versions(&self) -> Result<Vec<(String, String)>, Error> {
-        let raw = self.api_client.get_all_formulas_raw().await?;
-        formula_index_versions(&raw)
+        Ok(self.api_client.formula_index().await?.versions())
     }
 
     pub async fn search_formula_index(
@@ -595,8 +524,11 @@ impl Installer {
         query: &str,
         names_only: bool,
     ) -> Result<Vec<String>, Error> {
-        let raw = self.api_client.get_all_formulas_raw().await?;
-        formula_index_matches(&raw, query, names_only)
+        Ok(self
+            .api_client
+            .formula_index()
+            .await?
+            .matches(query, names_only))
     }
 
     pub async fn formula_dependencies(
