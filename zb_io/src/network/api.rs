@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use crate::checksum::verify_sha256_bytes;
@@ -6,6 +5,7 @@ use crate::network::cache::{ApiCache, CacheEntry};
 use crate::network::suggest::rank_formula_suggestions;
 use crate::network::tap_formula::{parse_tap_formula_ref, parse_tap_formula_ruby};
 use futures_util::stream::{self, StreamExt};
+use zb_core::formula::{Versions, effective_version};
 use zb_core::{Error, Formula};
 
 const HOMEBREW_CORE_RAW_BASE: &str =
@@ -63,11 +63,135 @@ pub(crate) struct FormulaIndexEntry {
     #[serde(default)]
     pub(crate) name: Option<String>,
     #[serde(default)]
+    pub(crate) versions: Option<Versions>,
+    #[serde(default)]
+    pub(crate) revision: u32,
+    #[serde(default)]
     pub(crate) aliases: Vec<String>,
     #[serde(default)]
     pub(crate) oldnames: Vec<String>,
     #[serde(default)]
     pub(crate) desc: Option<String>,
+}
+
+#[derive(Debug)]
+pub(crate) struct FormulaIndex {
+    entries: Vec<FormulaIndexEntry>,
+}
+
+impl FormulaIndex {
+    pub(crate) fn parse(raw: &str) -> Result<Self, Error> {
+        let entries = serde_json::from_str(raw)
+            .map_err(Error::network("failed to parse bulk formula index JSON"))?;
+        Ok(Self { entries })
+    }
+
+    pub(crate) fn names(&self) -> Vec<String> {
+        let mut names: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|entry| entry.name.clone())
+            .collect();
+        names.sort_unstable();
+        names
+    }
+
+    pub(crate) fn versions(&self) -> Vec<(String, String)> {
+        let mut versions: Vec<(String, String)> = self
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let name = entry.name.clone()?;
+                let stable = entry.versions.as_ref()?.stable.clone();
+                Some((name, effective_version(&stable, entry.revision)))
+            })
+            .collect();
+        versions.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+        versions
+    }
+
+    pub(crate) fn matches(&self, query: &str, names_only: bool) -> Vec<String> {
+        let terms: Vec<String> = query
+            .split_whitespace()
+            .map(str::to_ascii_lowercase)
+            .collect();
+        if terms.is_empty() {
+            return Vec::new();
+        }
+
+        let mut matches: Vec<String> = self
+            .entries
+            .iter()
+            .filter_map(|entry| {
+                let name = entry.name.as_ref()?;
+                let mut haystack = vec![name.clone()];
+                haystack.extend(entry.aliases.iter().cloned());
+                haystack.extend(entry.oldnames.iter().cloned());
+                if !names_only && let Some(desc) = &entry.desc {
+                    haystack.push(desc.clone());
+                }
+                let haystack = haystack.join(" ").to_ascii_lowercase();
+                terms
+                    .iter()
+                    .all(|term| haystack.contains(term))
+                    .then(|| name.clone())
+            })
+            .collect();
+        matches.sort_unstable();
+        matches.dedup();
+        matches
+    }
+
+    fn candidates(&self) -> Vec<String> {
+        use std::collections::HashSet;
+
+        let mut seen = HashSet::new();
+        let mut candidates = Vec::new();
+
+        for entry in &self.entries {
+            Self::push_candidate(&mut candidates, &mut seen, entry.name.as_deref());
+
+            for alias in &entry.aliases {
+                Self::push_candidate(&mut candidates, &mut seen, Some(alias.as_str()));
+            }
+
+            for oldname in &entry.oldnames {
+                Self::push_candidate(&mut candidates, &mut seen, Some(oldname.as_str()));
+            }
+        }
+
+        candidates
+    }
+
+    fn canonical_for_alias(&self, requested: &str) -> Option<&str> {
+        self.entries.iter().find_map(|entry| {
+            let canonical = entry.name.as_deref()?;
+            entry
+                .aliases
+                .iter()
+                .chain(entry.oldnames.iter())
+                .any(|alias| alias == requested)
+                .then_some(canonical)
+        })
+    }
+
+    fn push_candidate(
+        candidates: &mut Vec<String>,
+        seen: &mut std::collections::HashSet<String>,
+        value: Option<&str>,
+    ) {
+        let Some(name) = value.map(str::trim) else {
+            return;
+        };
+
+        if name.is_empty() {
+            return;
+        }
+
+        if seen.insert(name.to_string()) {
+            candidates.push(name.to_string());
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -78,8 +202,7 @@ pub struct ApiClient {
     tap_raw_base_url: String,
     client: reqwest::Client,
     cache: Option<ApiCache>,
-    formula_candidates: RwLock<Option<Arc<[String]>>>,
-    alias_map: RwLock<Option<Arc<HashMap<String, String>>>>,
+    formula_index: RwLock<Option<Arc<FormulaIndex>>>,
 }
 
 impl ApiClient {
@@ -125,8 +248,7 @@ impl ApiClient {
             tap_raw_base_url: "https://raw.githubusercontent.com".to_string(),
             client,
             cache: None,
-            formula_candidates: RwLock::new(None),
-            alias_map: RwLock::new(None),
+            formula_index: RwLock::new(None),
         }
     }
 
@@ -307,11 +429,12 @@ impl ApiClient {
         match self.fetch_formula_json(name).await {
             Ok(body) => parse_body(body),
             Err(Error::MissingFormula { .. }) => {
-                if let Ok(alias_map) = self.get_alias_map().await
-                    && let Some(canonical) = alias_map.get(name)
+                if let Ok(index) = self.formula_index().await
+                    && let Some(canonical) = index.canonical_for_alias(name)
                 {
+                    let canonical = canonical.to_string();
                     return self
-                        .fetch_formula_json(canonical)
+                        .fetch_formula_json(&canonical)
                         .await
                         .and_then(parse_body);
                 }
@@ -413,96 +536,21 @@ impl ApiClient {
             return Ok(Vec::new());
         }
 
-        let candidates = self.formula_candidates().await?;
+        let candidates = self.formula_index().await?.candidates();
         Ok(rank_formula_suggestions(query, &candidates, limit))
     }
 
-    async fn formula_candidates(&self) -> Result<Arc<[String]>, Error> {
-        if let Some(candidates) = self.formula_candidates.read().ok().and_then(|c| c.clone()) {
-            return Ok(candidates);
+    pub(crate) async fn formula_index(&self) -> Result<Arc<FormulaIndex>, Error> {
+        if let Some(index) = self.formula_index.read().ok().and_then(|i| i.clone()) {
+            return Ok(index);
         }
 
         let raw = self.get_all_formulas_raw().await?;
-        let candidates: Arc<[String]> = Self::extract_formula_candidates(&raw)?.into();
-        if let Ok(mut cached) = self.formula_candidates.write() {
-            *cached = Some(Arc::clone(&candidates));
+        let index = Arc::new(FormulaIndex::parse(&raw)?);
+        if let Ok(mut cached) = self.formula_index.write() {
+            *cached = Some(Arc::clone(&index));
         }
-        Ok(candidates)
-    }
-
-    fn extract_formula_candidates(raw: &str) -> Result<Vec<String>, Error> {
-        use std::collections::HashSet;
-
-        let entries: Vec<FormulaIndexEntry> = serde_json::from_str(raw)
-            .map_err(Error::network("failed to parse bulk formula JSON"))?;
-
-        let mut seen = HashSet::new();
-        let mut candidates = Vec::new();
-
-        for entry in entries {
-            Self::push_candidate(&mut candidates, &mut seen, entry.name.as_deref());
-
-            for alias in &entry.aliases {
-                Self::push_candidate(&mut candidates, &mut seen, Some(alias.as_str()));
-            }
-
-            for oldname in &entry.oldnames {
-                Self::push_candidate(&mut candidates, &mut seen, Some(oldname.as_str()));
-            }
-        }
-
-        Ok(candidates)
-    }
-
-    fn push_candidate(
-        candidates: &mut Vec<String>,
-        seen: &mut std::collections::HashSet<String>,
-        value: Option<&str>,
-    ) {
-        let Some(name) = value.map(str::trim) else {
-            return;
-        };
-
-        if name.is_empty() {
-            return;
-        }
-
-        if seen.insert(name.to_string()) {
-            candidates.push(name.to_string());
-        }
-    }
-
-    async fn get_alias_map(&self) -> Result<Arc<HashMap<String, String>>, Error> {
-        if let Some(map) = self.alias_map.read().ok().and_then(|m| m.clone()) {
-            return Ok(map);
-        }
-
-        let raw = self.get_all_formulas_raw().await?;
-        let map: Arc<HashMap<String, String>> = Arc::new(Self::extract_alias_map(&raw)?);
-        if let Ok(mut cached) = self.alias_map.write() {
-            *cached = Some(Arc::clone(&map));
-        }
-        Ok(map)
-    }
-
-    fn extract_alias_map(raw: &str) -> Result<HashMap<String, String>, Error> {
-        let entries: Vec<FormulaIndexEntry> = serde_json::from_str(raw)
-            .map_err(Error::network("failed to parse bulk formula JSON"))?;
-
-        let mut map = HashMap::new();
-        for entry in &entries {
-            let Some(name) = entry.name.as_deref() else {
-                continue;
-            };
-            for alias in &entry.aliases {
-                map.entry(alias.clone()).or_insert_with(|| name.to_string());
-            }
-            for oldname in &entry.oldnames {
-                map.entry(oldname.clone())
-                    .or_insert_with(|| name.to_string());
-            }
-        }
-        Ok(map)
+        Ok(index)
     }
 
     pub async fn get_cask(&self, token: &str) -> Result<serde_json::Value, Error> {
@@ -1274,13 +1322,13 @@ end
     }
 
     #[test]
-    fn extract_formula_candidates_includes_name_aliases_and_oldnames() {
+    fn formula_index_candidates_include_names_aliases_and_oldnames() {
         let bulk = r#"[
             {"name":"python","aliases":["python@3.13"],"oldnames":["python3"]},
             {"name":"ripgrep","aliases":["rg"]}
         ]"#;
 
-        let candidates = ApiClient::extract_formula_candidates(bulk).unwrap();
+        let candidates = FormulaIndex::parse(bulk).unwrap().candidates();
         assert!(candidates.contains(&"python".to_string()));
         assert!(candidates.contains(&"python@3.13".to_string()));
         assert!(candidates.contains(&"python3".to_string()));
@@ -1346,19 +1394,19 @@ end
     }
 
     #[test]
-    fn extract_alias_map_maps_aliases_and_oldnames_to_canonical() {
+    fn formula_index_resolves_aliases_and_oldnames_to_canonical() {
         let bulk = r#"[
             {"name":"pkgconf","aliases":["pkg-config","pkgconfig"],"oldnames":[]},
             {"name":"python","aliases":[],"oldnames":["python3"]}
         ]"#;
 
-        let map = ApiClient::extract_alias_map(bulk).unwrap();
+        let index = FormulaIndex::parse(bulk).unwrap();
 
-        assert_eq!(map.get("pkg-config").map(String::as_str), Some("pkgconf"));
-        assert_eq!(map.get("pkgconfig").map(String::as_str), Some("pkgconf"));
-        assert_eq!(map.get("python3").map(String::as_str), Some("python"));
-        assert!(!map.contains_key("pkgconf"));
-        assert!(!map.contains_key("python"));
+        assert_eq!(index.canonical_for_alias("pkg-config"), Some("pkgconf"));
+        assert_eq!(index.canonical_for_alias("pkgconfig"), Some("pkgconf"));
+        assert_eq!(index.canonical_for_alias("python3"), Some("python"));
+        assert_eq!(index.canonical_for_alias("pkgconf"), None);
+        assert_eq!(index.canonical_for_alias("python"), None);
     }
 
     #[tokio::test]
