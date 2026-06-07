@@ -277,12 +277,18 @@ impl ApiClient {
 
     /// Clear all cached API responses. Returns the number removed.
     pub fn clear_cache(&self) -> Result<usize, Error> {
-        match &self.cache {
+        let removed = match &self.cache {
             Some(cache) => cache
                 .clear()
-                .map_err(Error::store("failed to clear API cache")),
-            None => Ok(0),
+                .map_err(Error::store("failed to clear API cache"))?,
+            None => 0,
+        };
+
+        if let Ok(mut formula_index) = self.formula_index.write() {
+            *formula_index = None;
         }
+
+        Ok(removed)
     }
 
     pub async fn fetch_formula_rb(
@@ -1380,6 +1386,36 @@ end
 
         assert_eq!(first.first().map(String::as_str), Some("python"));
         assert_eq!(second.first().map(String::as_str), Some("python"));
+    }
+
+    #[tokio::test]
+    async fn clear_cache_invalidates_formula_index() {
+        let mock_server = MockServer::start().await;
+
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"[{"name":"python"}]"#))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let client = ApiClient::with_base_url(format!("{}/formula", mock_server.uri())).unwrap();
+
+        let first_names = client.formula_index().await.unwrap().names();
+        assert_eq!(first_names, vec!["python".to_string()]);
+
+        client.clear_cache().unwrap();
+        mock_server.reset().await;
+
+        Mock::given(method("GET"))
+            .and(path("/formula.json"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(r#"[{"name":"ruby"}]"#))
+            .expect(1)
+            .mount(&mock_server)
+            .await;
+
+        let second_names = client.formula_index().await.unwrap().names();
+        assert_eq!(second_names, vec!["ruby".to_string()]);
     }
 
     #[tokio::test]
