@@ -377,3 +377,29 @@ fn format_duration(ns: f64) -> String {
         format!("{ns:.3} ns")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{DEFAULT_TABLE_COLUMN, encoded_column, table_id};
+
+    #[test]
+    fn table_id_returns_short_ids_unchanged() {
+        assert_eq!(table_id("onlyone"), "onlyone");
+        assert_eq!(table_id(""), "");
+    }
+
+    #[test]
+    fn table_id_handles_empty_segments() {
+        assert_eq!(table_id("group//row"), "group/row/");
+        assert_eq!(
+            table_id("group/col/"),
+            format!("group/{DEFAULT_TABLE_COLUMN}/col")
+        );
+    }
+
+    #[test]
+    fn table_id_encodes_multi_segment_columns() {
+        assert_eq!(encoded_column(["b", "c", "row"]), "b__c__row");
+        assert_eq!(table_id("group/a/b/c/row"), "group/b__c__row/a");
+    }
+}

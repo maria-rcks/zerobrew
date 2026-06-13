@@ -436,6 +436,20 @@ mod tests {
     }
 
     #[test]
+    fn prefix_flag_with_path_without_following_command_is_prefix_command() {
+        let cli = Cli::try_parse_from(["zb", "--prefix", "/opt/custom"]).unwrap();
+        assert!(cli.prefix.is_none());
+        assert!(matches!(
+            cli.command,
+            Commands::Prefix {
+                formulas,
+                installed: false,
+                unbrewed: false,
+            } if formulas == vec!["/opt/custom"]
+        ));
+    }
+
+    #[test]
     fn install_reinstall_and_upgrade_accept_common_homebrew_flags() {
         let commands = ["install", "reinstall", "upgrade"];
         for command in commands {
