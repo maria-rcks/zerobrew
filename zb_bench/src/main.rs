@@ -305,18 +305,15 @@ fn benchmark_id(root: &Path, path: &Path) -> Option<String> {
 }
 
 fn table_id(id: &str) -> String {
-    let parts = id.split('/').collect::<Vec<_>>();
-    if parts.len() < 2 {
+    let mut parts = id.split('/');
+    let Some(group) = parts.next() else {
         return id.to_string();
-    }
-
-    let group = parts[0];
-    let row = parts[1];
-    let column = if parts.len() > 2 {
-        encoded_column(&parts[2..])
-    } else {
-        DEFAULT_TABLE_COLUMN.to_string()
     };
+    let Some(row) = parts.next() else {
+        return id.to_string();
+    };
+
+    let column = encoded_column(parts);
     format!("{group}/{column}/{row}")
 }
 
@@ -325,11 +322,10 @@ fn component_str(component: Component<'_>) -> Option<String> {
     (part != "base" && part != "new").then(|| part.into_owned())
 }
 
-fn encoded_column(parts: &[&str]) -> String {
+fn encoded_column<'a>(parts: impl IntoIterator<Item = &'a str>) -> String {
     let column = parts
-        .iter()
+        .into_iter()
         .filter(|part| !part.is_empty())
-        .copied()
         .collect::<Vec<_>>()
         .join("__");
     if column.is_empty() {

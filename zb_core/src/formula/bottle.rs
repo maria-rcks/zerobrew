@@ -1,3 +1,4 @@
+use crate::formula::types::BottleFile;
 use crate::{Error, Formula};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -26,6 +27,14 @@ fn codename_for_major(major: u32) -> Option<&'static str> {
         14 => Some("sonoma"),
         13 => Some("ventura"),
         _ => None,
+    }
+}
+
+fn selected_bottle(tag: impl Into<String>, file: &BottleFile) -> SelectedBottle {
+    SelectedBottle {
+        tag: tag.into(),
+        url: file.url.clone(),
+        sha256: file.sha256.clone(),
     }
 }
 
@@ -62,15 +71,11 @@ pub fn select_bottle_for_platform(
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let codenames = compatible_codenames(macos_version);
-        let tags: Vec<String> = codenames.iter().map(|c| format!("arm64_{c}")).collect();
 
-        for tag in &tags {
+        for codename in codenames {
+            let tag = format!("arm64_{codename}");
             if let Some(file) = formula.bottle.stable.files.get(tag.as_str()) {
-                return Ok(SelectedBottle {
-                    tag: tag.clone(),
-                    url: file.url.clone(),
-                    sha256: file.sha256.clone(),
-                });
+                return Ok(selected_bottle(tag, file));
             }
         }
     }
@@ -81,11 +86,7 @@ pub fn select_bottle_for_platform(
 
         for tag in &tags {
             if let Some(file) = formula.bottle.stable.files.get(*tag) {
-                return Ok(SelectedBottle {
-                    tag: tag.to_string(),
-                    url: file.url.clone(),
-                    sha256: file.sha256.clone(),
-                });
+                return Ok(selected_bottle(*tag, file));
             }
         }
     }
@@ -95,36 +96,24 @@ pub fn select_bottle_for_platform(
         let linux_tags = ["x86_64_linux"];
         for preferred_tag in linux_tags {
             if let Some(file) = formula.bottle.stable.files.get(preferred_tag) {
-                return Ok(SelectedBottle {
-                    tag: preferred_tag.to_string(),
-                    url: file.url.clone(),
-                    sha256: file.sha256.clone(),
-                });
+                return Ok(selected_bottle(preferred_tag, file));
             }
         }
     }
 
     if let Some(file) = formula.bottle.stable.files.get("all") {
-        return Ok(SelectedBottle {
-            tag: "all".to_string(),
-            url: file.url.clone(),
-            sha256: file.sha256.clone(),
-        });
+        return Ok(selected_bottle("all", file));
     }
 
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     {
         let codenames = compatible_codenames(macos_version);
         for (tag, file) in &formula.bottle.stable.files {
-            if tag.starts_with("arm64_") && !tag.contains("linux") {
-                let bare = tag.strip_prefix("arm64_").unwrap_or(tag);
-                if codenames.contains(&bare) {
-                    return Ok(SelectedBottle {
-                        tag: tag.clone(),
-                        url: file.url.clone(),
-                        sha256: file.sha256.clone(),
-                    });
-                }
+            if let Some(bare) = tag.strip_prefix("arm64_")
+                && !tag.contains("linux")
+                && codenames.contains(&bare)
+            {
+                return Ok(selected_bottle(tag, file));
             }
         }
     }
@@ -133,14 +122,12 @@ pub fn select_bottle_for_platform(
     {
         let codenames = compatible_codenames(macos_version);
         for (tag, file) in &formula.bottle.stable.files {
-            if !tag.starts_with("arm64_") && !tag.contains("linux") && tag != "all" {
-                if codenames.contains(&tag.as_str()) {
-                    return Ok(SelectedBottle {
-                        tag: tag.clone(),
-                        url: file.url.clone(),
-                        sha256: file.sha256.clone(),
-                    });
-                }
+            if !tag.starts_with("arm64_")
+                && !tag.contains("linux")
+                && tag != "all"
+                && codenames.contains(&tag.as_str())
+            {
+                return Ok(selected_bottle(tag, file));
             }
         }
     }
@@ -148,11 +135,7 @@ pub fn select_bottle_for_platform(
     #[cfg(target_os = "linux")]
     for (tag, file) in &formula.bottle.stable.files {
         if tag.contains("linux") {
-            return Ok(SelectedBottle {
-                tag: tag.clone(),
-                url: file.url.clone(),
-                sha256: file.sha256.clone(),
-            });
+            return Ok(selected_bottle(tag, file));
         }
     }
 

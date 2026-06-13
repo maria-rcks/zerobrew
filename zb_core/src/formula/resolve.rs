@@ -21,7 +21,13 @@ pub fn resolve_closure_with_options(
     let idx_to_name: Vec<&str> = formulas.keys().map(|k| k.as_str()).collect();
     let n = idx_to_name.len();
 
-    let closure = compute_closure(roots, formulas, &name_to_idx, only_dependencies)?;
+    let closure = compute_closure(
+        roots,
+        formulas,
+        &name_to_idx,
+        &idx_to_name,
+        only_dependencies,
+    )?;
 
     let mut indegree = vec![0u32; n];
     let mut adjacency: Vec<Vec<usize>> = vec![Vec::new(); n];
@@ -80,6 +86,7 @@ fn compute_closure(
     roots: &[String],
     formulas: &BTreeMap<String, Formula>,
     name_to_idx: &HashMap<&str, usize>,
+    idx_to_name: &[&str],
     only_dependencies: bool,
 ) -> Result<BTreeSet<usize>, Error> {
     let mut closure = BTreeSet::new();
@@ -100,8 +107,6 @@ fn compute_closure(
             stack.push(idx);
         }
     }
-
-    let idx_to_name: Vec<&str> = formulas.keys().map(|k| k.as_str()).collect();
 
     while let Some(idx) = stack.pop() {
         if !closure.insert(idx) {

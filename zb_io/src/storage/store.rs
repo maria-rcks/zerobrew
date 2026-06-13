@@ -62,14 +62,7 @@ impl Store {
             return Ok(entry_path);
         }
 
-        // Acquire exclusive lock for this store_key
-        let lock_path = self.locks_dir.join(format!("{store_key}.lock"));
-        let lock_file =
-            File::create(&lock_path).map_err(Error::store("failed to create lock file"))?;
-
-        lock_file
-            .lock_exclusive()
-            .map_err(Error::store("failed to acquire lock"))?;
+        let _lock_file = self.acquire_entry_lock(store_key)?;
 
         // Double-check after acquiring lock (another process may have created it)
         if entry_path.exists() {
@@ -91,7 +84,6 @@ impl Store {
             });
         }
 
-        // Lock will be released when lock_file is dropped
         Ok(entry_path)
     }
 
@@ -103,14 +95,8 @@ impl Store {
             return Ok(());
         }
 
-        // Acquire exclusive lock for this store_key
-        let lock_path = self.locks_dir.join(format!("{store_key}.lock"));
-        let lock_file =
-            File::create(&lock_path).map_err(Error::store("failed to create lock file"))?;
-
-        lock_file
-            .lock_exclusive()
-            .map_err(Error::store("failed to acquire lock"))?;
+        let _lock_file = self.acquire_entry_lock(store_key)?;
+        let lock_path = self.lock_path(store_key);
 
         if entry_path.exists() {
             fs::remove_dir_all(&entry_path)
@@ -121,6 +107,21 @@ impl Store {
         let _ = fs::remove_file(&lock_path);
 
         Ok(())
+    }
+
+    fn lock_path(&self, store_key: &str) -> PathBuf {
+        self.locks_dir.join(format!("{store_key}.lock"))
+    }
+
+    fn acquire_entry_lock(&self, store_key: &str) -> Result<File, Error> {
+        let lock_file = File::create(self.lock_path(store_key))
+            .map_err(Error::store("failed to create lock file"))?;
+
+        lock_file
+            .lock_exclusive()
+            .map_err(Error::store("failed to acquire lock"))?;
+
+        Ok(lock_file)
     }
 }
 

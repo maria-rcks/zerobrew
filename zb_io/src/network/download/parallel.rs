@@ -29,10 +29,7 @@ impl ParallelDownloader {
     pub fn new(blob_cache: BlobCache) -> Self {
         let semaphore = Arc::new(Semaphore::new(GLOBAL_DOWNLOAD_CONCURRENCY));
         Self {
-            downloader: Arc::new(Downloader::with_semaphore(
-                blob_cache,
-                Some(semaphore.clone()),
-            )),
+            downloader: Arc::new(Downloader::with_semaphore(blob_cache, Some(semaphore))),
             inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -40,10 +37,7 @@ impl ParallelDownloader {
     pub fn with_concurrency(blob_cache: BlobCache, concurrency: usize) -> Self {
         let semaphore = Arc::new(Semaphore::new(concurrency));
         Self {
-            downloader: Arc::new(Downloader::with_semaphore(
-                blob_cache,
-                Some(semaphore.clone()),
-            )),
+            downloader: Arc::new(Downloader::with_semaphore(blob_cache, Some(semaphore))),
             inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }

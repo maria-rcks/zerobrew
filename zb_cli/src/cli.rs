@@ -77,12 +77,9 @@ where
     if args.get(1).is_some_and(|arg| arg == "--cellar") {
         args[1] = OsString::from("cellar");
     } else if args.get(1).is_some_and(|arg| arg == "--prefix") {
-        let next = args.get(2).map(|arg| arg.to_string_lossy());
         let has_following_command = args.get(3).is_some();
-        let value_is_probably_path = next
-            .as_ref()
-            .is_some_and(|arg| arg.starts_with('/') || arg.starts_with('.'));
-        if !has_following_command || !value_is_probably_path {
+        let prefix_value_is_path = args.get(2).is_some_and(value_is_probably_path);
+        if !has_following_command || !prefix_value_is_path {
             args[1] = OsString::from("prefix");
         }
     }
