@@ -59,18 +59,17 @@ fn detect_build_system(source_url: &str, build_deps: &[String]) -> BuildSystem {
     let has_dep = |name: &str| build_deps.iter().any(|d| d == name);
 
     if has_dep("cmake") {
-        return BuildSystem::Cmake;
-    }
-    if has_dep("meson") {
-        return BuildSystem::Meson;
-    }
-    if source_url.ends_with(".tar.gz")
+        BuildSystem::Cmake
+    } else if has_dep("meson") {
+        BuildSystem::Meson
+    } else if source_url.ends_with(".tar.gz")
         || source_url.ends_with(".tar.xz")
         || source_url.ends_with(".tar.bz2")
     {
-        return BuildSystem::Autoconf;
+        BuildSystem::Autoconf
+    } else {
+        BuildSystem::RubyFormula
     }
-    BuildSystem::RubyFormula
 }
 
 #[cfg(test)]

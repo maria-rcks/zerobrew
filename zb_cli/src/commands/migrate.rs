@@ -44,7 +44,7 @@ pub async fn execute(
         .map(|(name, _)| format!("cask:{name}"))
         .collect();
     let cask_target_conflicts =
-        cask_artifact_conflicts(&cask_jsons, installer.app_dir(), installer.font_dir())?;
+        cask_artifact_conflicts(&cask_jsons, installer.app_dir(), installer.font_dir());
     let cask_fallback_dirs = if cask_target_conflicts.is_empty() {
         None
     } else {
@@ -174,7 +174,7 @@ pub async fn execute(
     let mut expected_names = formula_names.clone();
     expected_names.extend(cask_install_names.clone());
     let (successfully_installed, failed_installed) =
-        check_install_status(installer, &expected_names)?;
+        check_install_status(installer, &expected_names);
     let success_count = successfully_installed.len();
 
     ui.blank_line().map_err(ui_error)?;
@@ -259,7 +259,7 @@ fn cask_artifact_conflicts(
     casks: &[(String, serde_json::Value)],
     app_dir: &Path,
     font_dir: &Path,
-) -> Result<Vec<PathBuf>, zb_core::Error> {
+) -> Vec<PathBuf> {
     let mut conflicts = Vec::new();
 
     for (token, cask_json) in casks {
@@ -280,7 +280,7 @@ fn cask_artifact_conflicts(
         }
     }
 
-    Ok(conflicts)
+    conflicts
 }
 
 fn supported_cask_jsons(
@@ -403,7 +403,7 @@ fn still_installed_casks(targets: &[String]) -> Vec<String> {
 fn check_install_status(
     installer: &zb_io::Installer,
     formula_names: &[String],
-) -> Result<(Vec<String>, Vec<String>), zb_core::Error> {
+) -> (Vec<String>, Vec<String>) {
     let mut successfully_installed = Vec::new();
     let mut failed_installed = Vec::new();
 
@@ -415,7 +415,7 @@ fn check_install_status(
         }
     }
 
-    Ok((successfully_installed, failed_installed))
+    (successfully_installed, failed_installed)
 }
 
 fn ui_error(err: std::io::Error) -> zb_core::Error {
@@ -453,7 +453,7 @@ mod tests {
             }),
         )];
 
-        let conflicts = cask_artifact_conflicts(&casks, &app_dir, &font_dir).unwrap();
+        let conflicts = cask_artifact_conflicts(&casks, &app_dir, &font_dir);
 
         assert_eq!(conflicts.len(), 2);
         assert!(conflicts.contains(&app_dir.join("Demo.app")));
@@ -474,7 +474,7 @@ mod tests {
         )];
 
         let conflicts =
-            cask_artifact_conflicts(&casks, &tmp.path().join("Applications"), tmp.path()).unwrap();
+            cask_artifact_conflicts(&casks, &tmp.path().join("Applications"), tmp.path());
 
         assert!(conflicts.is_empty());
     }
@@ -493,7 +493,7 @@ mod tests {
         )];
 
         let conflicts =
-            cask_artifact_conflicts(&casks, &tmp.path().join("Applications"), tmp.path()).unwrap();
+            cask_artifact_conflicts(&casks, &tmp.path().join("Applications"), tmp.path());
 
         assert!(conflicts.is_empty());
     }

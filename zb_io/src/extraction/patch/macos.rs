@@ -64,10 +64,7 @@ fn patch_text_file_strings(path: &Path, new_prefix: &str, new_cellar: &str) -> R
         return Ok(());
     }
 
-    let mut new_content = content.clone();
-    let mut changed = false;
-
-    new_content = new_content
+    let mut new_content = content
         .replace("@@HOMEBREW_PREFIX@@", new_prefix)
         .replace("@@HOMEBREW_CELLAR@@", new_cellar)
         .replace("@@HOMEBREW_REPOSITORY@@", new_prefix)
@@ -75,9 +72,7 @@ fn patch_text_file_strings(path: &Path, new_prefix: &str, new_cellar: &str) -> R
         .replace("@@HOMEBREW_PERL@@", "/usr/bin/perl")
         .replace("@@HOMEBREW_JAVA@@", "/usr/bin/java");
 
-    if new_content != content {
-        changed = true;
-    }
+    let mut changed = new_content != content;
 
     for old_prefix in HOMEBREW_PREFIXES {
         if old_prefix == &new_prefix {
@@ -141,7 +136,6 @@ fn patch_macho_binary_strings(
         .map_err(Error::store("failed to read file"))?;
     drop(file);
 
-    let original_contents = contents.clone();
     let mut patched = false;
     let cellar_fragment = format!("/Cellar/{pkg_name}/");
     let may_need_install_name_tool = bytes_contain(&contents, b"@@HOMEBREW_")
@@ -184,7 +178,7 @@ fn patch_macho_binary_strings(
         }
     }
 
-    if patched && contents != original_contents {
+    if patched {
         let temp_path = path.with_extension("tmp_patch");
         let mut temp_file =
             fs::File::create(&temp_path).map_err(Error::store("failed to create temp file"))?;

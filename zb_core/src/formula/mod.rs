@@ -17,10 +17,6 @@ pub use types::{
 /// - `wget` -> `wget`
 /// - `hashicorp/tap/terraform` -> `terraform`
 pub fn formula_token(name: &str) -> &str {
-    if name.is_empty() {
-        return "";
-    }
-
     name.rsplit('/')
         .find(|segment| !segment.is_empty())
         .unwrap_or("")

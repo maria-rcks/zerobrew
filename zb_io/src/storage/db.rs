@@ -346,26 +346,23 @@ impl<'a> InstallTransaction<'a> {
             )
             .map_err(Error::store("failed to record install"))?;
 
-        match previous_store_key.as_deref() {
-            Some(previous) if previous == store_key => {}
-            other => {
-                if let Some(previous) = other {
-                    self.tx
-                        .execute(
-                            "UPDATE store_refs SET refcount = refcount - 1 WHERE store_key = ?1",
-                            params![previous],
-                        )
-                        .map_err(Error::store("failed to decrement previous store ref"))?;
-                }
-
+        if previous_store_key.as_deref() != Some(store_key) {
+            if let Some(previous) = previous_store_key.as_deref() {
                 self.tx
                     .execute(
-                        "INSERT INTO store_refs (store_key, refcount) VALUES (?1, 1)
-                         ON CONFLICT(store_key) DO UPDATE SET refcount = refcount + 1",
-                        params![store_key],
+                        "UPDATE store_refs SET refcount = refcount - 1 WHERE store_key = ?1",
+                        params![previous],
                     )
-                    .map_err(Error::store("failed to increment store ref"))?;
+                    .map_err(Error::store("failed to decrement previous store ref"))?;
             }
+
+            self.tx
+                .execute(
+                    "INSERT INTO store_refs (store_key, refcount) VALUES (?1, 1)
+                     ON CONFLICT(store_key) DO UPDATE SET refcount = refcount + 1",
+                    params![store_key],
+                )
+                .map_err(Error::store("failed to increment store ref"))?;
         }
 
         Ok(())

@@ -127,7 +127,7 @@ fn extract_zip_archive(path: &Path, dest_dir: &Path) -> Result<(), Error> {
         let mut entry = zip
             .by_index(i)
             .map_err(Error::store("failed to read zip entry"))?;
-        let Some(raw_path) = entry.enclosed_name().map(|p| p.to_path_buf()) else {
+        let Some(raw_path) = entry.enclosed_name() else {
             return Err(Error::StoreCorruption {
                 message: "zip entry with invalid path".to_string(),
             });
@@ -229,45 +229,26 @@ fn normalize_path(path: &Path) -> PathBuf {
     use std::path::Component;
 
     let mut components = Vec::new();
-    let mut is_absolute = false;
 
     for component in path.components() {
         match component {
             Component::RootDir => {
-                // This is an absolute path
-                is_absolute = true;
                 components.push(component);
             }
-            Component::CurDir => {
-                // Skip . components
-            }
-            Component::ParentDir => {
-                // Try to pop the last component
-                if !components.is_empty() {
-                    let last = components.last();
-                    // Only pop if the last component is a normal component
-                    if matches!(last, Some(Component::Normal(_))) {
-                        components.pop();
-                    } else if matches!(last, Some(Component::RootDir)) {
-                        // For absolute paths, cannot go above root - silently ignore
-                        // e.g., /foo/../../bar -> /bar (the extra .. is dropped)
-                    } else {
-                        // For relative paths, keep the .. if we hit prefix or another ..
-                        components.push(component);
-                    }
-                } else if !is_absolute {
-                    // Keep leading .. for relative paths
-                    components.push(component);
+            Component::CurDir => {}
+            Component::ParentDir => match components.last() {
+                Some(Component::Normal(_)) => {
+                    components.pop();
                 }
-                // For absolute paths with nothing to pop, drop the .. (can't go above root)
-            }
+                Some(Component::RootDir) => {}
+                _ => components.push(component),
+            },
             _ => {
                 components.push(component);
             }
         }
     }
 
-    // Reconstruct the path from components
     components.iter().collect()
 }
 
