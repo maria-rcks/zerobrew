@@ -255,6 +255,43 @@ mod tests {
     }
 
     #[test]
+    #[cfg(target_os = "macos")]
+    fn all_build_dependencies_excludes_uses_from_macos_on_macos() {
+        let mut formula: Formula =
+            serde_json::from_str(include_str!("../../fixtures/formula_foo.json")).unwrap();
+        formula.build_dependencies = vec!["pkgconf".to_string()];
+        formula.uses_from_macos = vec![
+            UsesFromMacos::Plain("libxml2".to_string()),
+            UsesFromMacos::WithContext {
+                name: "zlib".to_string(),
+                context: "build".to_string(),
+            },
+        ];
+
+        assert_eq!(formula.all_build_dependencies(), vec!["pkgconf"]);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "macos"))]
+    fn all_build_dependencies_includes_uses_from_macos_off_macos() {
+        let mut formula: Formula =
+            serde_json::from_str(include_str!("../../fixtures/formula_foo.json")).unwrap();
+        formula.build_dependencies = vec!["pkgconf".to_string()];
+        formula.uses_from_macos = vec![
+            UsesFromMacos::Plain("libxml2".to_string()),
+            UsesFromMacos::WithContext {
+                name: "zlib".to_string(),
+                context: "build".to_string(),
+            },
+        ];
+
+        assert_eq!(
+            formula.all_build_dependencies(),
+            vec!["pkgconf", "libxml2", "zlib"]
+        );
+    }
+
+    #[test]
     fn revision_field_defaults_to_zero() {
         let fixture = include_str!("../../fixtures/formula_foo.json");
         let formula: Formula = serde_json::from_str(fixture).unwrap();
