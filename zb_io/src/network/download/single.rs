@@ -168,14 +168,14 @@ impl Downloader {
     ) -> Result<PathBuf, Error> {
         let expected_sha256 = normalize_sha256(expected_sha256)?;
 
-        if self.blob_cache.has_blob(&expected_sha256) {
+        if let Some(blob_path) = self.blob_cache.verified_blob_path(&expected_sha256)? {
             if let (Some(cb), Some(n)) = (&progress, &name) {
                 cb(InstallProgress::DownloadCompleted {
                     name: n.clone(),
                     total_bytes: 0,
                 });
             }
-            return Ok(self.blob_cache.blob_path(&expected_sha256));
+            return Ok(blob_path);
         }
 
         let alternates = get_alternate_urls(url);
@@ -595,5 +595,32 @@ mod tests {
         let result = downloader.download(&url, sha256).await;
 
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn redownloads_corrupt_cached_blob() {
+        let mock_server = MockServer::start().await;
+        let content = b"hello world";
+        let sha256 = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+        Mock::given(method("GET"))
+            .and(path("/test.tar.gz"))
+            .respond_with(ResponseTemplate::new(200).set_body_bytes(content.to_vec()))
+            .mount(&mock_server)
+            .await;
+
+        let tmp = TempDir::new().unwrap();
+        let blob_cache = BlobCache::new(tmp.path()).unwrap();
+        std::fs::write(blob_cache.blob_path(sha256), b"corrupt").unwrap();
+
+        let downloader = Downloader::new(blob_cache.clone());
+        let url = format!("{}/test.tar.gz", mock_server.uri());
+        let blob_path = downloader.download(&url, sha256).await.unwrap();
+
+        assert_eq!(std::fs::read(&blob_path).unwrap(), content);
+        assert_eq!(
+            blob_cache.verified_blob_path(sha256).unwrap(),
+            Some(blob_path)
+        );
     }
 }

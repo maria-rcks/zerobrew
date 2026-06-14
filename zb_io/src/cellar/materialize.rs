@@ -1,7 +1,11 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+
+use sha2::{Digest, Sha256};
 use zb_core::Error;
+
+use crate::fs_copy::copy_dir_with_fallback;
 
 #[cfg(target_os = "linux")]
 use crate::extraction::patch::linux::patch_placeholders;
@@ -139,6 +143,34 @@ impl Cellar {
         Ok(keg_path)
     }
 
+    pub fn materialize_from_relocated(
+        &self,
+        name: &str,
+        version: &str,
+        relocated_entry: &Path,
+    ) -> Result<PathBuf, Error> {
+        let keg_path = self.keg_path(name, version);
+
+        if keg_path.exists() {
+            return Ok(keg_path);
+        }
+
+        if let Some(parent) = keg_path.parent() {
+            fs::create_dir_all(parent)
+                .map_err(Error::store("failed to create keg parent directory"))?;
+        }
+
+        copy_dir_with_fallback(relocated_entry, &keg_path)?;
+        Ok(keg_path)
+    }
+
+    pub fn relocation_cache_key(&self, store_key: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(self.cellar_dir.to_string_lossy().as_bytes());
+        let digest = format!("{:x}", hasher.finalize());
+        format!("{store_key}-relocated-{}", &digest[..16])
+    }
+
     pub fn remove_keg(&self, name: &str, version: &str) -> Result<(), Error> {
         let keg_path = self.keg_path(name, version);
 
@@ -186,94 +218,6 @@ fn find_bottle_content(store_entry: &Path, name: &str, version: &str) -> Result<
 
     // Fall back to store entry root (for flat tarballs or tests)
     Ok(store_entry.to_path_buf())
-}
-
-fn copy_dir_with_fallback(src: &Path, dst: &Path) -> Result<(), Error> {
-    // Try clonefile first (APFS), then hardlink, then copy
-    #[cfg(target_os = "macos")]
-    {
-        if try_clonefile_dir(src, dst).is_ok() {
-            return Ok(());
-        }
-    }
-
-    // Fall back to recursive copy with hardlink/copy per file
-    copy_dir_recursive(src, dst, true)
-}
-
-#[cfg(target_os = "macos")]
-fn try_clonefile_dir(src: &Path, dst: &Path) -> io::Result<()> {
-    fs::create_dir_all(dst)?;
-
-    let source_contents = src.join(".");
-    let status = std::process::Command::new("/bin/cp")
-        .arg("-cR")
-        .arg(&source_contents)
-        .arg(dst)
-        .status()?;
-
-    if status.success() {
-        Ok(())
-    } else {
-        let _ = fs::remove_dir_all(dst);
-        Err(io::Error::other("copy-on-write directory clone failed"))
-    }
-}
-
-fn copy_dir_recursive(src: &Path, dst: &Path, try_hardlink: bool) -> Result<(), Error> {
-    let create_ctx = format!("failed to create directory {}", dst.display());
-    fs::create_dir_all(dst).map_err(Error::store(create_ctx.as_str()))?;
-
-    let read_ctx = format!("failed to read directory {}", src.display());
-    for entry in fs::read_dir(src).map_err(Error::store(read_ctx.as_str()))? {
-        let entry = entry.map_err(Error::store("failed to read directory entry"))?;
-
-        let src_path = entry.path();
-        let dst_path = dst.join(entry.file_name());
-        let file_type = entry
-            .file_type()
-            .map_err(Error::store("failed to get file type"))?;
-
-        if file_type.is_dir() {
-            copy_dir_recursive(&src_path, &dst_path, try_hardlink)?;
-        } else if file_type.is_symlink() {
-            let target =
-                fs::read_link(&src_path).map_err(Error::store("failed to read symlink"))?;
-
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(&target, &dst_path)
-                .map_err(Error::store("failed to create symlink"))?;
-
-            #[cfg(not(unix))]
-            fs::copy(&src_path, &dst_path)
-                .map_err(Error::store("failed to copy symlink as file"))?;
-        } else {
-            // Try hardlink first, then copy
-            if try_hardlink && fs::hard_link(&src_path, &dst_path).is_ok() {
-                continue;
-            }
-
-            // Fall back to copy
-            fs::copy(&src_path, &dst_path).map_err(Error::store("failed to copy file"))?;
-
-            // Preserve permissions
-            #[cfg(unix)]
-            {
-                let metadata =
-                    fs::metadata(&src_path).map_err(Error::store("failed to read metadata"))?;
-                fs::set_permissions(&dst_path, metadata.permissions())
-                    .map_err(Error::store("failed to set permissions"))?;
-            }
-        }
-    }
-
-    Ok(())
-}
-
-// For testing - copy without fallback strategies
-#[cfg(test)]
-fn copy_dir_copy_only(src: &Path, dst: &Path) -> Result<(), Error> {
-    copy_dir_recursive(src, dst, false)
 }
 
 #[cfg(test)]
@@ -372,6 +316,52 @@ mod tests {
     }
 
     #[test]
+    fn materialized_keg_changes_do_not_mutate_store_entry() {
+        let tmp = TempDir::new().unwrap();
+        let store_entry = setup_store_entry(&tmp);
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg_path = cellar.materialize("foo", "1.2.3", &store_entry).unwrap();
+
+        fs::write(keg_path.join("bin/foo"), b"patched").unwrap();
+
+        assert_eq!(
+            fs::read(store_entry.join("bin/foo")).unwrap(),
+            b"#!/bin/sh\necho foo"
+        );
+    }
+
+    #[test]
+    fn materializes_from_relocated_snapshot_without_raw_store_layout() {
+        let tmp = TempDir::new().unwrap();
+        let relocated = tmp.path().join("relocated");
+        fs::create_dir_all(relocated.join("bin")).unwrap();
+        fs::write(relocated.join("bin/foo"), b"already patched").unwrap();
+
+        let cellar = Cellar::new(tmp.path()).unwrap();
+        let keg_path = cellar
+            .materialize_from_relocated("foo", "1.2.3", &relocated)
+            .unwrap();
+
+        assert_eq!(
+            fs::read_to_string(keg_path.join("bin/foo")).unwrap(),
+            "already patched"
+        );
+    }
+
+    #[test]
+    fn relocation_cache_key_includes_cellar_path() {
+        let tmp = TempDir::new().unwrap();
+        let cellar_a = Cellar::new_at(tmp.path().join("a/Cellar")).unwrap();
+        let cellar_b = Cellar::new_at(tmp.path().join("b/Cellar")).unwrap();
+
+        assert_ne!(
+            cellar_a.relocation_cache_key("abc123"),
+            cellar_b.relocation_cache_key("abc123")
+        );
+    }
+
+    #[test]
     fn remove_keg_cleans_up() {
         let tmp = TempDir::new().unwrap();
         let store_entry = setup_store_entry(&tmp);
@@ -396,9 +386,7 @@ mod tests {
     }
 
     #[test]
-    fn hardlink_fallback_to_copy_works() {
-        // Test that copy fallback works when hardlink fails
-        // (e.g., across different filesystems)
+    fn copy_fallback_materializes_tree() {
         let tmp1 = TempDir::new().unwrap();
         let tmp2 = TempDir::new().unwrap();
 
@@ -408,8 +396,7 @@ mod tests {
 
         let dst = tmp2.path().join("dst");
 
-        // Use copy_dir_copy_only to skip hardlink attempts
-        copy_dir_copy_only(&src, &dst).unwrap();
+        crate::fs_copy::copy_dir_with_fallback(&src, &dst).unwrap();
 
         assert_eq!(
             fs::read_to_string(dst.join("test.txt")).unwrap(),

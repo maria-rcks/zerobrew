@@ -5,24 +5,29 @@ use std::path::{Path, PathBuf};
 use fs4::fs_std::FileExt;
 
 use crate::extraction::extract::extract_archive;
+use crate::fs_copy::copy_dir_with_fallback;
 use zb_core::Error;
 
 #[derive(Clone)]
 pub struct Store {
     store_dir: PathBuf,
+    relocated_dir: PathBuf,
     locks_dir: PathBuf,
 }
 
 impl Store {
     pub fn new(root: &Path) -> io::Result<Self> {
         let store_dir = root.join("store");
+        let relocated_dir = root.join("store-relocated");
         let locks_dir = root.join("locks");
 
         fs::create_dir_all(&store_dir)?;
+        fs::create_dir_all(&relocated_dir)?;
         fs::create_dir_all(&locks_dir)?;
 
         Ok(Self {
             store_dir,
+            relocated_dir,
             locks_dir,
         })
     }
@@ -33,6 +38,14 @@ impl Store {
 
     pub fn has_entry(&self, store_key: &str) -> bool {
         self.entry_path(store_key).exists()
+    }
+
+    pub fn relocated_entry_path(&self, cache_key: &str) -> PathBuf {
+        self.relocated_dir.join(cache_key)
+    }
+
+    pub fn has_relocated_entry(&self, cache_key: &str) -> bool {
+        self.relocated_entry_path(cache_key).exists()
     }
 
     pub fn list_entries(&self) -> Result<Vec<String>, Error> {
@@ -85,6 +98,41 @@ impl Store {
         }
 
         Ok(entry_path)
+    }
+
+    pub fn save_relocated_entry(&self, cache_key: &str, keg_path: &Path) -> Result<PathBuf, Error> {
+        let entry_path = self.relocated_entry_path(cache_key);
+
+        if entry_path.exists() {
+            return Ok(entry_path);
+        }
+
+        let lock_key = format!("relocated-{cache_key}");
+        let _lock_file = self.acquire_entry_lock(&lock_key)?;
+
+        if entry_path.exists() {
+            return Ok(entry_path);
+        }
+
+        let tmp_dir = tempfile::tempdir_in(&self.relocated_dir)
+            .map_err(Error::store("failed to create relocated temp directory"))?;
+
+        copy_dir_with_fallback(keg_path, tmp_dir.path())?;
+
+        let tmp_path = tmp_dir.keep();
+        match fs::rename(&tmp_path, &entry_path) {
+            Ok(()) => Ok(entry_path),
+            Err(_) if entry_path.exists() => {
+                let _ = fs::remove_dir_all(&tmp_path);
+                Ok(entry_path)
+            }
+            Err(e) => {
+                let _ = fs::remove_dir_all(&tmp_path);
+                Err(Error::StoreCorruption {
+                    message: format!("failed to rename relocated store entry: {e}"),
+                })
+            }
+        }
     }
 
     /// Remove a store entry. This should only be called when the refcount is 0.
@@ -248,5 +296,32 @@ mod tests {
         store.ensure_entry(store_key, &blob_path).unwrap();
 
         assert!(store.has_entry(store_key));
+    }
+
+    #[test]
+    fn save_relocated_entry_snapshots_keg_tree() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::new(tmp.path()).unwrap();
+        let keg_path = tmp.path().join("Cellar/foo/1.0.0");
+        fs::create_dir_all(keg_path.join("bin")).unwrap();
+        fs::write(keg_path.join("bin/foo"), b"patched").unwrap();
+
+        let entry = store
+            .save_relocated_entry("abc123-relocated-prefix", &keg_path)
+            .unwrap();
+
+        assert!(store.has_relocated_entry("abc123-relocated-prefix"));
+        assert_eq!(fs::read(entry.join("bin/foo")).unwrap(), b"patched");
+
+        fs::write(keg_path.join("bin/foo"), b"changed after snapshot").unwrap();
+        assert_eq!(
+            fs::read(
+                store
+                    .relocated_entry_path("abc123-relocated-prefix")
+                    .join("bin/foo")
+            )
+            .unwrap(),
+            b"patched"
+        );
     }
 }
