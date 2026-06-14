@@ -50,6 +50,18 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
 
+        let relocated_cache_key = self.cellar.relocation_cache_key(store_key);
+        if let Err(e) = self
+            .store
+            .save_relocated_entry(&relocated_cache_key, keg_path)
+        {
+            warn!(
+                formula = %install_name,
+                error = %e,
+                "failed to save relocated keg cache"
+            );
+        }
+
         let tx = self.db.transaction().inspect_err(|_| {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
@@ -63,7 +75,9 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
 
-        if let Err(e) = self.linker.link_opt(keg_path) {
+        let should_link_keg = link && !item.formula.is_keg_only();
+
+        if !should_link_keg && let Err(e) = self.linker.link_opt(keg_path) {
             warn!(formula = %install_name, error = %e, "failed to create opt link");
         }
         for alias in &item.formula.aliases {
@@ -72,7 +86,7 @@ impl Installer {
             }
         }
 
-        if link && !item.formula.is_keg_only() {
+        if should_link_keg {
             report(InstallProgress::LinkStarted {
                 name: formula_name.clone(),
             });
@@ -200,7 +214,28 @@ impl Installer {
         let cellar_for_materialize = cellar.clone();
         let materialize_name = formula_name.clone();
         let materialize_version = version.clone();
+        let relocated_cache_key = cellar.relocation_cache_key(&bottle.sha256);
+        let relocated_entry = store.relocated_entry_path(&relocated_cache_key);
         let keg_path = tokio::task::spawn_blocking(move || {
+            if relocated_entry.exists() {
+                match cellar_for_materialize.materialize_from_relocated(
+                    &materialize_name,
+                    &materialize_version,
+                    &relocated_entry,
+                ) {
+                    Ok(keg_path) => return Ok(keg_path),
+                    Err(e) => {
+                        warn!(
+                            formula = %materialize_name,
+                            error = %e,
+                            "failed to materialize relocated keg cache; falling back to raw store"
+                        );
+                        let _ = cellar_for_materialize
+                            .remove_keg(&materialize_name, &materialize_version);
+                    }
+                }
+            }
+
             cellar_for_materialize.materialize(
                 &materialize_name,
                 &materialize_version,

@@ -2,6 +2,7 @@ pub mod build;
 pub mod cellar;
 pub(crate) mod checksum;
 pub mod extraction;
+pub(crate) mod fs_copy;
 pub mod installer;
 pub mod network;
 pub mod path;

@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use tracing::warn;
 use zb_core::{BuildPlan, Error, Formula, InstallMethod, select_bottle};
 
+use crate::checksum::normalize_sha256;
+
 use super::{InstallPlan, Installer, PlannedInstall};
 
 impl Installer {
@@ -130,23 +132,22 @@ impl Installer {
         if build_from_source {
             match BuildPlan::from_formula(formula, &self.prefix) {
                 Some(plan) => Ok(InstallMethod::Source(plan)),
-                None => select_bottle(formula)
-                    .map(InstallMethod::Bottle)
-                    .map_err(|_| Error::UnsupportedBottle {
-                        name: formula.name.clone(),
-                    }),
+                None => normalized_bottle_method(formula),
             }
         } else {
-            match select_bottle(formula) {
-                Ok(bottle) => Ok(InstallMethod::Bottle(bottle)),
-                Err(_) => BuildPlan::from_formula(formula, &self.prefix).map_or_else(
-                    || {
-                        Err(Error::UnsupportedBottle {
-                            name: formula.name.clone(),
-                        })
-                    },
-                    |plan| Ok(InstallMethod::Source(plan)),
-                ),
+            match normalized_bottle_method(formula) {
+                Ok(method) => Ok(method),
+                Err(Error::UnsupportedBottle { .. }) => {
+                    BuildPlan::from_formula(formula, &self.prefix).map_or_else(
+                        || {
+                            Err(Error::UnsupportedBottle {
+                                name: formula.name.clone(),
+                            })
+                        },
+                        |plan| Ok(InstallMethod::Source(plan)),
+                    )
+                }
+                Err(e) => Err(e),
             }
         }
     }
@@ -168,6 +169,12 @@ impl Installer {
                     }
             })
     }
+}
+
+fn normalized_bottle_method(formula: &Formula) -> Result<InstallMethod, Error> {
+    let mut bottle = select_bottle(formula)?;
+    bottle.sha256 = normalize_sha256(&bottle.sha256)?;
+    Ok(InstallMethod::Bottle(bottle))
 }
 
 #[cfg(test)]
@@ -458,7 +465,7 @@ end
                         "files": {{
                             "{}": {{
                                 "url": "https://example.com/hasboth.bottle.tar.gz",
-                                "sha256": "aabbccdd"
+                                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                             }}
                         }}
                     }}
@@ -503,6 +510,34 @@ end
             plan.items[0].method,
             zb_core::InstallMethod::Bottle(_)
         ));
+    }
+
+    #[tokio::test]
+    async fn normalizes_bottle_sha_for_store_keys() {
+        let mock_server = MockServer::start().await;
+        let tmp = TempDir::new().unwrap();
+        let uppercase_sha = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+        mount_formula(
+            &mock_server,
+            "upper",
+            bottle_formula_json("upper", "1.0.0", uppercase_sha),
+        )
+        .await;
+
+        let root = tmp.path().join("zerobrew");
+        let prefix = tmp.path().join("homebrew");
+        let installer = test_installer(&root, &prefix, format!("{}/formula", mock_server.uri()));
+
+        let plan = installer.plan(&["upper".to_string()]).await.unwrap();
+
+        let zb_core::InstallMethod::Bottle(ref bottle) = plan.items[0].method else {
+            panic!("expected bottle install");
+        };
+        assert_eq!(
+            bottle.sha256,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        );
     }
 
     #[tokio::test]

@@ -34,30 +34,57 @@ pub(crate) async fn fetch_download_response_internal(
     token_cache: &TokenCache,
     url: &str,
 ) -> Result<reqwest::Response, Error> {
-    let cached_token = get_cached_token_for_url_internal(token_cache, url).await;
+    let mut last_error = None;
 
-    let mut request = client.get(url);
-    if let Some(token) = &cached_token {
-        request = request.header(AUTHORIZATION, bearer_header(token)?);
+    for attempt in 0..=MAX_CHUNK_RETRIES {
+        let cached_token = get_cached_token_for_url_internal(token_cache, url).await;
+
+        let mut request = client.get(url);
+        if let Some(token) = &cached_token {
+            request = request.header(AUTHORIZATION, bearer_header(token)?);
+        }
+
+        match request.send().await {
+            Ok(response) => {
+                let response = if response.status() == StatusCode::UNAUTHORIZED {
+                    handle_auth_challenge_internal(client, token_cache, url, response).await?
+                } else {
+                    response
+                };
+
+                if response.status().is_success() {
+                    return Ok(response);
+                }
+
+                let status = response.status();
+                let err = Error::NetworkFailure {
+                    message: format!("HTTP {status}"),
+                };
+
+                if is_retryable_response_status(status) && attempt < MAX_CHUNK_RETRIES {
+                    last_error = Some(err);
+                    tokio::time::sleep(retry_delay(attempt)).await;
+                    continue;
+                }
+
+                return Err(err);
+            }
+            Err(e) => {
+                last_error = Some(Error::NetworkFailure {
+                    message: e.to_string(),
+                });
+
+                if attempt < MAX_CHUNK_RETRIES {
+                    tokio::time::sleep(retry_delay(attempt)).await;
+                    continue;
+                }
+            }
+        }
     }
 
-    let response = request.send().await.map_err(|e| Error::NetworkFailure {
-        message: e.to_string(),
-    })?;
-
-    let response = if response.status() == StatusCode::UNAUTHORIZED {
-        handle_auth_challenge_internal(client, token_cache, url, response).await?
-    } else {
-        response
-    };
-
-    if !response.status().is_success() {
-        return Err(Error::NetworkFailure {
-            message: format!("HTTP {}", response.status()),
-        });
-    }
-
-    Ok(response)
+    Err(last_error.unwrap_or_else(|| Error::NetworkFailure {
+        message: "download request failed after retries".into(),
+    }))
 }
 
 pub(crate) async fn fetch_range_response_internal(
@@ -92,9 +119,11 @@ pub(crate) async fn fetch_range_response_internal(
                         message: format!("HTTP {}", response.status()),
                     };
 
-                    if response.status().is_server_error() && attempt < MAX_CHUNK_RETRIES {
+                    if is_retryable_response_status(response.status())
+                        && attempt < MAX_CHUNK_RETRIES
+                    {
                         last_error = Some(err);
-                        tokio::time::sleep(Duration::from_millis(100 * (1 << attempt))).await;
+                        tokio::time::sleep(retry_delay(attempt)).await;
                         continue;
                     }
                     return Err(err);
@@ -108,7 +137,7 @@ pub(crate) async fn fetch_range_response_internal(
                 });
 
                 if attempt < MAX_CHUNK_RETRIES {
-                    tokio::time::sleep(Duration::from_millis(100 * (1 << attempt))).await;
+                    tokio::time::sleep(retry_delay(attempt)).await;
                     continue;
                 }
             }
@@ -118,6 +147,14 @@ pub(crate) async fn fetch_range_response_internal(
     Err(last_error.unwrap_or_else(|| Error::NetworkFailure {
         message: "range request failed after retries".into(),
     }))
+}
+
+fn is_retryable_response_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn retry_delay(attempt: u32) -> Duration {
+    Duration::from_millis(100 * (1 << attempt))
 }
 
 pub(crate) async fn get_cached_token_for_url_internal(
@@ -279,6 +316,14 @@ fn parse_www_authenticate(header: &str) -> Result<(String, String, String), Erro
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tokio::sync::RwLock;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
     use super::*;
 
     #[test]
@@ -294,5 +339,69 @@ mod tests {
             extract_scope_for_url("https://ghcr.io/v2/hashicorp/tap/terraform/blobs/sha256:abc")
                 .unwrap();
         assert_eq!(scope, "repository:hashicorp/tap/terraform:pull");
+    }
+
+    #[tokio::test]
+    async fn fetch_download_response_retries_server_errors() {
+        let mock_server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_mock = attempts.clone();
+
+        Mock::given(method("GET"))
+            .and(path("/blob"))
+            .respond_with(move |_: &wiremock::Request| {
+                let attempt = attempts_for_mock.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    ResponseTemplate::new(500)
+                } else {
+                    ResponseTemplate::new(200).set_body_bytes(b"ok".to_vec())
+                }
+            })
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token_cache: TokenCache = Arc::new(RwLock::new(HashMap::new()));
+
+        let response = fetch_download_response_internal(
+            &client,
+            &token_cache,
+            &format!("{}/blob", mock_server.uri()),
+        )
+        .await
+        .unwrap();
+
+        assert!(response.status().is_success());
+        assert_eq!(response.bytes().await.unwrap().as_ref(), b"ok");
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn fetch_download_response_does_not_retry_not_found() {
+        let mock_server = MockServer::start().await;
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_mock = attempts.clone();
+
+        Mock::given(method("GET"))
+            .and(path("/missing"))
+            .respond_with(move |_: &wiremock::Request| {
+                attempts_for_mock.fetch_add(1, Ordering::SeqCst);
+                ResponseTemplate::new(404)
+            })
+            .mount(&mock_server)
+            .await;
+
+        let client = reqwest::Client::new();
+        let token_cache: TokenCache = Arc::new(RwLock::new(HashMap::new()));
+
+        let result = fetch_download_response_internal(
+            &client,
+            &token_cache,
+            &format!("{}/missing", mock_server.uri()),
+        )
+        .await;
+
+        assert!(result.is_err());
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
     }
 }

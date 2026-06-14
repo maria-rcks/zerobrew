@@ -1,9 +1,12 @@
 use std::fs;
-use std::io::{self, Seek, SeekFrom, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
+use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
 use zb_core::Error;
+
+use crate::checksum::normalize_sha256;
 
 #[derive(Clone)]
 pub struct BlobCache {
@@ -28,6 +31,36 @@ impl BlobCache {
 
     pub fn has_blob(&self, sha256: &str) -> bool {
         self.blob_path(sha256).exists()
+    }
+
+    pub fn verified_blob_path(&self, sha256: &str) -> Result<Option<PathBuf>, Error> {
+        let expected = normalize_sha256(sha256)?;
+        let path = self.blob_path(&expected);
+        if !path.exists() {
+            return Ok(None);
+        }
+
+        let mut file = fs::File::open(&path).map_err(Error::store("failed to open cached blob"))?;
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 1024 * 64];
+
+        loop {
+            let n = file
+                .read(&mut buffer)
+                .map_err(Error::store("failed to read cached blob"))?;
+            if n == 0 {
+                break;
+            }
+            hasher.update(&buffer[..n]);
+        }
+
+        let actual = format!("{:x}", hasher.finalize());
+        if actual == expected {
+            return Ok(Some(path));
+        }
+
+        let _ = fs::remove_file(&path);
+        Ok(None)
     }
 
     /// Remove a blob from the cache (used when extraction fails due to corruption)
@@ -160,5 +193,30 @@ mod tests {
 
         let removed = cache.remove_blob("nonexistent").unwrap();
         assert!(!removed);
+    }
+
+    #[test]
+    fn verified_blob_path_accepts_matching_cached_blob() {
+        let tmp = TempDir::new().unwrap();
+        let cache = BlobCache::new(tmp.path()).unwrap();
+        let sha = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+        let mut writer = cache.start_write(sha).unwrap();
+        writer.write_all(b"hello world").unwrap();
+        let path = writer.commit().unwrap();
+
+        assert_eq!(cache.verified_blob_path(sha).unwrap(), Some(path));
+    }
+
+    #[test]
+    fn verified_blob_path_removes_corrupt_cached_blob() {
+        let tmp = TempDir::new().unwrap();
+        let cache = BlobCache::new(tmp.path()).unwrap();
+        let sha = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+        fs::write(cache.blob_path(sha), b"not hello world").unwrap();
+
+        assert_eq!(cache.verified_blob_path(sha).unwrap(), None);
+        assert!(!cache.has_blob(sha));
     }
 }
