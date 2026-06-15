@@ -7,6 +7,8 @@ use zb_core::Error;
 
 use crate::fs_copy::copy_dir_with_fallback;
 
+const RELOCATION_CACHE_SCHEMA: &str = "relocated-v2";
+
 #[cfg(target_os = "linux")]
 use crate::extraction::patch::linux::patch_placeholders;
 
@@ -164,9 +166,15 @@ impl Cellar {
         Ok(keg_path)
     }
 
-    pub fn relocation_cache_key(&self, store_key: &str) -> String {
+    pub fn relocation_cache_key(&self, store_key: &str, name: &str, version: &str) -> String {
         let mut hasher = Sha256::new();
+        hasher.update(RELOCATION_CACHE_SCHEMA.as_bytes());
+        hasher.update(b"\0");
         hasher.update(self.cellar_dir.to_string_lossy().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(name.as_bytes());
+        hasher.update(b"\0");
+        hasher.update(version.as_bytes());
         let digest = format!("{:x}", hasher.finalize());
         format!("{store_key}-relocated-{}", &digest[..16])
     }
@@ -356,8 +364,23 @@ mod tests {
         let cellar_b = Cellar::new_at(tmp.path().join("b/Cellar")).unwrap();
 
         assert_ne!(
-            cellar_a.relocation_cache_key("abc123"),
-            cellar_b.relocation_cache_key("abc123")
+            cellar_a.relocation_cache_key("abc123", "foo", "1.2.3"),
+            cellar_b.relocation_cache_key("abc123", "foo", "1.2.3")
+        );
+    }
+
+    #[test]
+    fn relocation_cache_key_includes_formula_and_version() {
+        let tmp = TempDir::new().unwrap();
+        let cellar = Cellar::new_at(tmp.path().join("Cellar")).unwrap();
+
+        assert_ne!(
+            cellar.relocation_cache_key("abc123", "foo", "1.2.3"),
+            cellar.relocation_cache_key("abc123", "bar", "1.2.3")
+        );
+        assert_ne!(
+            cellar.relocation_cache_key("abc123", "foo", "1.2.3"),
+            cellar.relocation_cache_key("abc123", "foo", "1.2.4")
         );
     }
 

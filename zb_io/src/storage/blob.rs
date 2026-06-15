@@ -1,6 +1,7 @@
 use std::fs;
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 use sha2::{Digest, Sha256};
 use tempfile::NamedTempFile;
@@ -29,6 +30,10 @@ impl BlobCache {
         self.blobs_dir.join(format!("{sha256}.tar.gz"))
     }
 
+    fn verified_marker_path(&self, sha256: &str) -> PathBuf {
+        self.blobs_dir.join(format!("{sha256}.tar.gz.verified"))
+    }
+
     pub fn has_blob(&self, sha256: &str) -> bool {
         self.blob_path(sha256).exists()
     }
@@ -38,6 +43,10 @@ impl BlobCache {
         let path = self.blob_path(&expected);
         if !path.exists() {
             return Ok(None);
+        }
+
+        if self.verified_marker_matches(&expected, &path) {
+            return Ok(Some(path));
         }
 
         let mut file = fs::File::open(&path).map_err(Error::store("failed to open cached blob"))?;
@@ -56,11 +65,34 @@ impl BlobCache {
 
         let actual = format!("{:x}", hasher.finalize());
         if actual == expected {
+            let _ = self.mark_blob_verified(&expected);
             return Ok(Some(path));
         }
 
         let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(self.verified_marker_path(&expected));
         Ok(None)
+    }
+
+    pub fn mark_blob_verified(&self, sha256: &str) -> Result<(), Error> {
+        let expected = normalize_sha256(sha256)?;
+        let path = self.blob_path(&expected);
+        let marker = self.verified_marker_path(&expected);
+        let signature =
+            blob_signature(&path).map_err(Error::store("failed to read cached blob metadata"))?;
+        fs::write(marker, signature)
+            .map_err(Error::store("failed to write verified blob marker"))?;
+        Ok(())
+    }
+
+    fn verified_marker_matches(&self, sha256: &str, path: &Path) -> bool {
+        let Ok(marker) = fs::read_to_string(self.verified_marker_path(sha256)) else {
+            return false;
+        };
+        let Ok(signature) = blob_signature(path) else {
+            return false;
+        };
+        marker == signature
     }
 
     /// Remove a blob from the cache (used when extraction fails due to corruption)
@@ -68,6 +100,7 @@ impl BlobCache {
         let path = self.blob_path(sha256);
         if path.exists() {
             fs::remove_file(&path)?;
+            let _ = fs::remove_file(self.verified_marker_path(sha256));
             Ok(true)
         } else {
             Ok(false)
@@ -82,6 +115,18 @@ impl BlobCache {
             final_path,
         })
     }
+}
+
+fn blob_signature(path: &Path) -> io::Result<String> {
+    let metadata = fs::metadata(path)?;
+    let modified = metadata.modified()?;
+    let modified = modified.duration_since(UNIX_EPOCH).unwrap_or_default();
+    Ok(format!(
+        "v1\n{}\n{}\n{}\n",
+        metadata.len(),
+        modified.as_secs(),
+        modified.subsec_nanos()
+    ))
 }
 
 pub struct BlobWriter {
@@ -206,6 +251,7 @@ mod tests {
         let path = writer.commit().unwrap();
 
         assert_eq!(cache.verified_blob_path(sha).unwrap(), Some(path));
+        assert!(cache.verified_marker_path(sha).exists());
     }
 
     #[test]
@@ -218,5 +264,24 @@ mod tests {
 
         assert_eq!(cache.verified_blob_path(sha).unwrap(), None);
         assert!(!cache.has_blob(sha));
+    }
+
+    #[test]
+    fn verified_blob_path_rechecks_when_marker_metadata_changes() {
+        let tmp = TempDir::new().unwrap();
+        let cache = BlobCache::new(tmp.path()).unwrap();
+        let sha = "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9";
+
+        fs::write(cache.blob_path(sha), b"hello world").unwrap();
+        assert_eq!(
+            cache.verified_blob_path(sha).unwrap(),
+            Some(cache.blob_path(sha))
+        );
+
+        fs::write(cache.blob_path(sha), b"not hello world").unwrap();
+
+        assert_eq!(cache.verified_blob_path(sha).unwrap(), None);
+        assert!(!cache.has_blob(sha));
+        assert!(!cache.verified_marker_path(sha).exists());
     }
 }
