@@ -50,7 +50,9 @@ impl Installer {
             Self::cleanup_materialized(&self.cellar, formula_name, &version);
         })?;
 
-        let relocated_cache_key = self.cellar.relocation_cache_key(store_key);
+        let relocated_cache_key =
+            self.cellar
+                .relocation_cache_key(store_key, formula_name, &version);
         if let Err(e) = self
             .store
             .save_relocated_entry(&relocated_cache_key, keg_path)
@@ -214,7 +216,8 @@ impl Installer {
         let cellar_for_materialize = cellar.clone();
         let materialize_name = formula_name.clone();
         let materialize_version = version.clone();
-        let relocated_cache_key = cellar.relocation_cache_key(&bottle.sha256);
+        let relocated_cache_key =
+            cellar.relocation_cache_key(&bottle.sha256, &formula_name, &version);
         let relocated_entry = store.relocated_entry_path(&relocated_cache_key);
         let keg_path = tokio::task::spawn_blocking(move || {
             if relocated_entry.exists() {
@@ -1871,13 +1874,90 @@ fn remove_path_any(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use std::fs;
+    use std::io::Write;
+    use std::path::PathBuf;
 
+    use flate2::Compression;
+    use flate2::write::GzEncoder;
+    use sha2::{Digest, Sha256};
+    use tar::Builder;
     use tempfile::TempDir;
+    use zb_core::{Formula, InstallMethod, SelectedBottle};
 
     use crate::cellar::Cellar;
+    use crate::network::download::{DownloadResult, ParallelDownloader};
+    use crate::storage::blob::BlobCache;
     use crate::storage::db::Database;
+    use crate::storage::store::Store;
 
     use super::*;
+
+    fn test_formula(name: &str, version: &str, sha256: &str) -> Formula {
+        serde_json::from_value(serde_json::json!({
+            "name": name,
+            "versions": { "stable": version },
+            "dependencies": [],
+            "bottle": {
+                "stable": {
+                    "files": {
+                        "all": {
+                            "url": "https://example.invalid/test.tar.gz",
+                            "sha256": sha256
+                        }
+                    }
+                }
+            }
+        }))
+        .unwrap()
+    }
+
+    fn planned_bottle(name: &str, version: &str, sha256: &str) -> PlannedInstall {
+        PlannedInstall {
+            install_name: name.to_string(),
+            formula: test_formula(name, version, sha256),
+            method: InstallMethod::Bottle(SelectedBottle {
+                tag: "all".to_string(),
+                url: "https://example.invalid/test.tar.gz".to_string(),
+                sha256: sha256.to_string(),
+            }),
+        }
+    }
+
+    fn bottle_tarball(name: &str, version: &str, content: &[u8]) -> Vec<u8> {
+        let mut builder = Builder::new(Vec::new());
+        let mut header = tar::Header::new_gnu();
+        header
+            .set_path(format!("{name}/{version}/bin/{name}"))
+            .unwrap();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder.append(&header, content).unwrap();
+        let tar_data = builder.into_inner().unwrap();
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&tar_data).unwrap();
+        encoder.finish().unwrap()
+    }
+
+    fn sha256_hex(data: &[u8]) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(data);
+        format!("{:x}", hasher.finalize())
+    }
+
+    fn downloader_for(root: &std::path::Path) -> ParallelDownloader {
+        ParallelDownloader::new(BlobCache::new(&root.join("cache")).unwrap())
+    }
+
+    fn download_result(name: &str, sha256: &str, blob_path: PathBuf) -> DownloadResult {
+        DownloadResult {
+            name: name.to_string(),
+            sha256: sha256.to_string(),
+            blob_path,
+            index: 7,
+        }
+    }
 
     #[test]
     fn dependency_cellar_path_uses_formula_token_for_tap_name() {
@@ -1895,6 +1975,81 @@ mod tests {
         let path = dependency_cellar_path(&cellar, "openssl@3", "3.3.2");
 
         assert!(path.ends_with("cellar/openssl@3/3.3.2"));
+    }
+
+    #[tokio::test]
+    async fn prepare_bottle_prefers_relocated_cache_entry() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::new(tmp.path()).unwrap();
+        let cellar = Cellar::new_at(tmp.path().join("prefix/Cellar")).unwrap();
+        let name = "foo";
+        let version = "1.0.0";
+        let raw_content = b"raw store content";
+        let tarball = bottle_tarball(name, version, raw_content);
+        let sha256 = sha256_hex(&tarball);
+        let blob_path = tmp.path().join("foo.tar.gz");
+        fs::write(&blob_path, tarball).unwrap();
+
+        let relocated_key = cellar.relocation_cache_key(&sha256, name, version);
+        let relocated_entry = store.relocated_entry_path(&relocated_key);
+        fs::create_dir_all(relocated_entry.join("bin")).unwrap();
+        fs::write(relocated_entry.join("bin/foo"), b"relocated content").unwrap();
+
+        let prepared = Installer::prepare_bottle_item_with_parts(
+            downloader_for(tmp.path()),
+            store,
+            cellar,
+            planned_bottle(name, version, &sha256),
+            download_result(name, &sha256, blob_path),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(prepared.index, 7);
+        assert_eq!(
+            fs::read(prepared.keg_path.join("bin/foo")).unwrap(),
+            b"relocated content"
+        );
+    }
+
+    #[tokio::test]
+    async fn prepare_bottle_falls_back_when_relocated_cache_is_bad() {
+        let tmp = TempDir::new().unwrap();
+        let store = Store::new(tmp.path()).unwrap();
+        let cellar = Cellar::new_at(tmp.path().join("prefix/Cellar")).unwrap();
+        let name = "foo";
+        let version = "1.0.0";
+        let raw_content = b"raw store content";
+        let tarball = bottle_tarball(name, version, raw_content);
+        let sha256 = sha256_hex(&tarball);
+        let blob_path = tmp.path().join("foo.tar.gz");
+        fs::write(&blob_path, tarball).unwrap();
+
+        let relocated_key = cellar.relocation_cache_key(&sha256, name, version);
+        fs::write(
+            store.relocated_entry_path(&relocated_key),
+            b"not a directory",
+        )
+        .unwrap();
+
+        let prepared = Installer::prepare_bottle_item_with_parts(
+            downloader_for(tmp.path()),
+            store,
+            cellar,
+            planned_bottle(name, version, &sha256),
+            download_result(name, &sha256, blob_path),
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            fs::read(prepared.keg_path.join("bin/foo")).unwrap(),
+            raw_content
+        );
     }
 
     #[test]

@@ -303,7 +303,7 @@ impl Downloader {
                     });
                 }
 
-                if blob_cache.has_blob(&expected_sha256) {
+                if let Some(blob_path) = blob_cache.verified_blob_path(&expected_sha256)? {
                     if let (Some(cb), Some(n)) = (&progress, &name) {
                         cb(InstallProgress::DownloadCompleted {
                             name: n.clone(),
@@ -313,7 +313,7 @@ impl Downloader {
 
                     done.store(true, Ordering::Release);
                     done_notify.notify_waiters();
-                    return Ok(blob_cache.blob_path(&expected_sha256));
+                    return Ok(blob_path);
                 }
 
                 let response =
@@ -337,7 +337,7 @@ impl Downloader {
                     });
                 }
 
-                if blob_cache.has_blob(&expected_sha256) {
+                if let Some(blob_path) = blob_cache.verified_blob_path(&expected_sha256)? {
                     if let (Some(cb), Some(n)) = (&progress, &name) {
                         cb(InstallProgress::DownloadCompleted {
                             name: n.clone(),
@@ -347,7 +347,7 @@ impl Downloader {
 
                     done.store(true, Ordering::Release);
                     done_notify.notify_waiters();
-                    return Ok(blob_cache.blob_path(&expected_sha256));
+                    return Ok(blob_path);
                 }
 
                 let _global_permit = match global_semaphore {
@@ -471,7 +471,9 @@ pub(crate) async fn download_response_internal(
         });
     }
 
-    writer.commit()
+    let blob_path = writer.commit()?;
+    let _ = blob_cache.mark_blob_verified(&expected_sha256);
+    Ok(blob_path)
 }
 
 #[cfg(test)]

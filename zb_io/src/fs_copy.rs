@@ -1,6 +1,6 @@
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use zb_core::Error;
 
@@ -34,6 +34,8 @@ fn try_clonefile_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         .arg("-cR")
         .arg(&source_contents)
         .arg(dst)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()?;
 
     if status.success() {
@@ -59,6 +61,8 @@ fn try_reflink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
         .arg("-a")
         .arg(&source_contents)
         .arg(dst)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()?;
 
     if status.success() {
@@ -96,7 +100,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), Error> {
             #[cfg(not(unix))]
             fs::copy(&src_path, &dst_path)
                 .map_err(Error::store("failed to copy symlink as file"))?;
-        } else {
+        } else if file_type.is_file() {
             fs::copy(&src_path, &dst_path).map_err(Error::store("failed to copy file"))?;
 
             #[cfg(unix)]
@@ -106,8 +110,40 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), Error> {
                 fs::set_permissions(&dst_path, metadata.permissions())
                     .map_err(Error::store("failed to set permissions"))?;
             }
+        } else {
+            return Err(Error::StoreCorruption {
+                message: format!(
+                    "unsupported file type in copy source: {}",
+                    src_path.display()
+                ),
+            });
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    #[cfg(unix)]
+    #[test]
+    fn recursive_fallback_rejects_non_regular_files() {
+        use std::ffi::CString;
+        use std::os::unix::ffi::OsStrExt;
+
+        let tmp = TempDir::new().unwrap();
+        let src = tmp.path().join("src");
+        let dst = tmp.path().join("dst");
+        fs::create_dir_all(&src).unwrap();
+        let fifo = src.join("pipe");
+        let fifo_c = CString::new(fifo.as_os_str().as_bytes()).unwrap();
+
+        assert_eq!(unsafe { libc::mkfifo(fifo_c.as_ptr(), 0o644) }, 0);
+
+        let err = copy_dir_recursive(&src, &dst).unwrap_err();
+        assert!(err.to_string().contains("unsupported file type"));
+    }
 }
