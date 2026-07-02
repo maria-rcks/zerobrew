@@ -1970,6 +1970,45 @@ mod tests {
     }
 
     #[test]
+    fn external_tap_cask_uses_token_keg_name_but_preserves_install_name() {
+        let cask = resolve_cask(
+            "kamillobinski/thock/thock",
+            &serde_json::json!({
+                "version": "1.23.0",
+                "url": "https://example.invalid/thock.zip",
+                "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "artifacts": [{ "app": [["Thock.app"]] }]
+            }),
+        )
+        .unwrap();
+        let tmp = TempDir::new().unwrap();
+        let prefix = tmp.path().join("prefix");
+        let linker = Linker::new(&prefix).unwrap();
+        let cellar = Cellar::new(&prefix).unwrap();
+        let appimage_dir = tmp.path().join("AppImages");
+
+        let keg_name = formula_token(&cask.install_name);
+        let keg_path = cellar.keg_path(keg_name, &cask.version);
+        let mut cleanup = FailedInstallGuard::new(
+            &linker,
+            &cellar,
+            keg_name,
+            &cask.version,
+            &keg_path,
+            &appimage_dir,
+            true,
+        );
+
+        assert_eq!(cask.install_name, "cask:kamillobinski/thock/thock");
+        assert_eq!(keg_name, "thock");
+        assert!(keg_path.ends_with("cellar/thock/1.23.0"));
+        assert_eq!(cleanup.name, "thock");
+        assert_eq!(cleanup.keg_path, keg_path.as_path());
+
+        cleanup.disarm();
+    }
+
+    #[test]
     fn dependency_cellar_path_keeps_core_formula_name() {
         let tmp = TempDir::new().unwrap();
         let cellar = Cellar::new(tmp.path()).unwrap();

@@ -4,7 +4,7 @@
 //! - **stdout** carries machine-consumable *data* only (`data`, `data_json`):
 //!   formula lists, paths, JSON documents. Always safe to pipe.
 //! - **stderr** carries all human "chrome": headings, notes, warnings, errors,
-//!   step lines, prompts, and progress bars.
+//!   fatal-error context, step lines, prompts, and progress bars.
 //!
 //! Color is resolved once per stream at construction (honoring `NO_COLOR`,
 //! `CLICOLOR`, `CLICOLOR_FORCE`, `TERM=dumb`, and TTY state) and labels are
@@ -205,20 +205,27 @@ pub struct Ui {
     color_out: bool,
     color_err: bool,
     interactive: bool,
+    stderr_is_tty: bool,
     progress: MultiProgress,
     progress_enabled: bool,
 }
 
 /// Resolve whether a stream should be colored, honoring the conventions
 /// documented at <https://no-color.org> and <https://bixense.com/clicolors>.
+///
+/// Precedence: an explicit `--color always|never` flag wins over everything
+/// (matching git/cargo, where the flag expresses direct user intent); the
+/// environment (`NO_COLOR`, then `CLICOLOR_FORCE`/`CLICOLOR`, then
+/// `TERM=dumb`) is consulted only in `Auto` mode. Per the no-color.org spec,
+/// `NO_COLOR` disables color when present *and not an empty string*.
 fn resolve_color(choice: ColorChoice, stream_is_tty: bool) -> bool {
-    if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
-        return false;
-    }
     match choice {
         ColorChoice::Always => true,
         ColorChoice::Never => false,
         ColorChoice::Auto => {
+            if std::env::var_os("NO_COLOR").is_some_and(|v| !v.is_empty()) {
+                return false;
+            }
             if std::env::var_os("CLICOLOR_FORCE").is_some_and(|v| !v.is_empty() && v != "0") {
                 return true;
             }
@@ -275,6 +282,7 @@ impl Ui {
             color_out,
             color_err,
             interactive: io::stdin().is_terminal() && err_is_tty,
+            stderr_is_tty: err_is_tty,
             progress,
             progress_enabled,
         }
@@ -282,7 +290,15 @@ impl Ui {
 
     /// A `Ui` for tests: captures both streams in memory, no color, no
     /// progress drawing, non-interactive.
+    ///
+    /// The `console` crate's global color switches are pinned off so that
+    /// inline `console::style(...)` fragments render deterministically,
+    /// regardless of the host environment (`CLICOLOR_FORCE`, a TTY test
+    /// runner) or other tests. Label color for the `Ui` itself is still
+    /// controlled by `options.color` (baked with forced styling).
     pub fn for_test(options: UiOptions) -> (Self, MemWriter, MemWriter) {
+        console::set_colors_enabled(false);
+        console::set_colors_enabled_stderr(false);
         let out = MemWriter::default();
         let err = MemWriter::default();
         let theme = UiTheme::default();
@@ -298,6 +314,7 @@ impl Ui {
             color_out: color,
             color_err: color,
             interactive: false,
+            stderr_is_tty: false,
             progress: MultiProgress::with_draw_target(ProgressDrawTarget::hidden()),
             progress_enabled: false,
         };
@@ -345,6 +362,13 @@ impl Ui {
         self.progress_enabled
     }
 
+    /// True when stderr is terminal-backed, so an external command such as
+    /// `sudo` can still prompt through the controlling terminal even if stdin
+    /// is redirected.
+    pub fn can_prompt_external_command(&self) -> bool {
+        self.stderr_is_tty
+    }
+
     // ---------------------------------------------------------------------
     // DATA channel — stdout, never suppressed, always pipe-safe
     // ---------------------------------------------------------------------
@@ -376,7 +400,7 @@ impl Ui {
     }
 
     // ---------------------------------------------------------------------
-    // CHROME channel — stderr, quiet-gated (warn/error always shown)
+    // CHROME channel — stderr, quiet-gated (warn/error/error context always shown)
     // ---------------------------------------------------------------------
 
     fn chrome(&mut self, prefix: Option<Chrome>, message: &dyn Display) {
@@ -434,6 +458,26 @@ impl Ui {
     /// `error: message` — always shown, even under `--quiet`.
     pub fn error(&mut self, message: impl Display) {
         self.chrome(Some(Chrome::Error), &message);
+    }
+
+    /// `Note: message` — fatal-error context, always shown even under `--quiet`.
+    pub fn error_note(&mut self, message: impl Display) {
+        self.chrome(Some(Chrome::Note), &message);
+    }
+
+    /// `Hint: message` — fatal-error context, always shown even under `--quiet`.
+    pub fn error_hint(&mut self, message: impl Display) {
+        self.chrome(Some(Chrome::Hint), &message);
+    }
+
+    /// A plain fatal-error context line on stderr, always shown under `--quiet`.
+    pub fn error_status(&mut self, message: impl Display) {
+        self.chrome(None, &message);
+    }
+
+    /// An empty fatal-error context line, always shown under `--quiet`.
+    pub fn error_blank_line(&mut self) {
+        self.chrome(None, &"");
     }
 
     /// `    • message` — an indented list item.
@@ -690,6 +734,30 @@ mod tests {
         assert!(!chrome.contains("status line"));
         assert!(chrome.contains("Warning: kept warning"));
         assert!(chrome.contains("error: kept error"));
+    }
+
+    #[test]
+    fn quiet_keeps_error_context_but_suppresses_ordinary_chrome() {
+        let (mut ui, out, err) = Ui::for_test(UiOptions {
+            quiet: true,
+            ..Default::default()
+        });
+
+        ui.note("hidden note");
+        ui.status("hidden status");
+        ui.blank_line();
+        ui.error_note("kept note");
+        ui.error_hint("kept hint");
+        ui.error_status("kept status");
+        ui.error_blank_line();
+
+        assert!(out.contents().is_empty());
+        let chrome = err.contents();
+        assert!(!chrome.contains("hidden note"));
+        assert!(!chrome.contains("hidden status"));
+        assert!(chrome.contains("Note: kept note"));
+        assert!(chrome.contains("Hint: kept hint"));
+        assert!(chrome.contains("kept status"));
     }
 
     #[test]

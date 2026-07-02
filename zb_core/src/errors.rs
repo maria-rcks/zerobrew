@@ -120,4 +120,22 @@ mod tests {
 
         assert!(err.to_string().contains("libheif"));
     }
+
+    #[test]
+    fn invalid_argument_exits_with_usage_code() {
+        let err = Error::InvalidArgument {
+            message: "bad flag".to_string(),
+        };
+
+        assert_eq!(err.exit_code(), 2);
+    }
+
+    #[test]
+    fn non_usage_errors_exit_with_failure_code() {
+        let err = Error::NetworkFailure {
+            message: "offline".to_string(),
+        };
+
+        assert_eq!(err.exit_code(), 1);
+    }
 }

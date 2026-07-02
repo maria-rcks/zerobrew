@@ -79,24 +79,26 @@ pub fn suggest_formula_matches(ui: &mut Ui, requested: &str, suggestions: &[Stri
         return;
     }
 
-    ui.blank_line();
-    ui.hint(format!(
+    ui.error_blank_line();
+    ui.error_hint(format!(
         "Formula '{}' was not found. Did you mean:",
-        style(requested).bold()
+        style(requested).bold().for_stderr()
     ));
     for suggestion in suggestions {
-        ui.status(format!("      {}", style(suggestion).green()));
+        ui.error_status(format!("      {}", style(suggestion).green().for_stderr()));
     }
 
     if let Some(top_suggestion) = suggestions.first() {
-        ui.blank_line();
-        ui.status("      Try installing the closest match with zerobrew:");
-        ui.status(format!(
+        ui.error_blank_line();
+        ui.error_status("      Try installing the closest match with zerobrew:");
+        ui.error_status(format!(
             "      {}",
-            style(format!("zb install {top_suggestion}")).cyan()
+            style(format!("zb install {top_suggestion}"))
+                .cyan()
+                .for_stderr()
         ));
     }
-    ui.blank_line();
+    ui.error_blank_line();
 }
 
 pub async fn suggest_missing_formula_matches(
@@ -118,37 +120,41 @@ pub async fn suggest_missing_formula_matches(
 }
 
 pub fn suggest_homebrew(ui: &mut Ui, formula: &str, error: &zb_core::Error) {
-    ui.blank_line();
-    ui.note("This package can't be installed with zerobrew.");
-    ui.status(format!("      Error: {error}"));
-    ui.blank_line();
+    ui.error_blank_line();
+    ui.error_note("This package can't be installed with zerobrew.");
+    ui.error_status(format!("      Error: {error}"));
+    ui.error_blank_line();
 
     // Error for Termux on android since homebrew
     // doesn't support bottles for this platform
     // details: https://github.com/lucasgelfond/zerobrew/pull/136
     if cfg!(target_os = "android") {
-        ui.status(format!(
+        ui.error_status(format!(
             "      {} {}",
-            style(formula).yellow().bold(),
+            style(formula).yellow().bold().for_stderr(),
             style(
                 "is not compatible with Termux - homebrew bottles are not available for Android."
             )
             .red()
             .bold()
+            .for_stderr()
         ));
-        ui.status(format!(
+        ui.error_status(format!(
             "      {}",
-            style("and cannot be installed on it.").red().bold()
+            style("and cannot be installed on it.")
+                .red()
+                .bold()
+                .for_stderr()
         ));
     } else {
-        ui.status("      Try installing with Homebrew instead:");
-        ui.status(format!(
+        ui.error_status("      Try installing with Homebrew instead:");
+        ui.error_status(format!(
             "      {}",
-            style(format!("brew install {formula}")).cyan()
+            style(format!("brew install {formula}")).cyan().for_stderr()
         ));
     }
 
-    ui.blank_line();
+    ui.error_blank_line();
 }
 
 pub fn get_root_path(cli_root: Option<PathBuf>) -> PathBuf {
@@ -194,7 +200,7 @@ mod tests {
 
     use super::{
         PackageKind, normalize_formula_name, normalize_package_name, suggest_formula_matches,
-        suggest_missing_formula_matches,
+        suggest_homebrew, suggest_missing_formula_matches,
     };
     use crate::ui::{Ui, UiOptions};
 
@@ -279,6 +285,32 @@ mod tests {
         assert!(rendered.contains("python"));
         assert!(rendered.contains("pytest"));
         assert!(rendered.contains("zb install python"));
+        assert!(out.contents().is_empty(), "hints must not pollute stdout");
+    }
+
+    #[test]
+    fn fatal_suggestions_survive_quiet_mode() {
+        let (mut ui, out, err) = Ui::for_test(UiOptions {
+            quiet: true,
+            ..Default::default()
+        });
+
+        ui.note("ordinary note");
+        suggest_formula_matches(&mut ui, "pythn", &["python".to_string()]);
+        suggest_homebrew(
+            &mut ui,
+            "unportable",
+            &zb_core::Error::UnsupportedBottle {
+                name: "unportable".to_string(),
+            },
+        );
+
+        let rendered = err.contents();
+        assert!(rendered.contains("Did you mean"));
+        assert!(rendered.contains("zb install python"));
+        assert!(rendered.contains("This package can't be installed with zerobrew."));
+        assert!(rendered.contains("brew install unportable"));
+        assert!(!rendered.contains("ordinary note"));
         assert!(out.contents().is_empty(), "hints must not pollute stdout");
     }
 
