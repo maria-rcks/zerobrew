@@ -121,8 +121,8 @@ async fn run_build(
         message: "failed to capture ruby shim stderr".to_string(),
     })?;
 
-    let stdout_task = tokio::spawn(stream_output_and_capture_tail(stdout, false));
-    let stderr_task = tokio::spawn(stream_output_and_capture_tail(stderr, true));
+    let stdout_task = tokio::spawn(stream_output_and_capture_tail(stdout));
+    let stderr_task = tokio::spawn(stream_output_and_capture_tail(stderr));
 
     let status = child
         .wait()
@@ -155,10 +155,7 @@ async fn run_build(
     Ok(())
 }
 
-async fn stream_output_and_capture_tail<R>(
-    reader: R,
-    stderr: bool,
-) -> Result<Vec<String>, std::io::Error>
+async fn stream_output_and_capture_tail<R>(reader: R) -> Result<Vec<String>, std::io::Error>
 where
     R: AsyncRead + Unpin,
 {
@@ -167,11 +164,10 @@ where
     let mut lines = BufReader::new(reader).lines();
 
     while let Some(line) = lines.next_line().await? {
-        if stderr {
-            eprintln!("{line}");
-        } else {
-            println!("{line}");
-        }
+        // Build logs are diagnostics, not data: stream both of the child's
+        // streams to OUR stderr so the CLI's stdout data channel stays clean
+        // for piping (`zb install --build-from-source foo | ...`).
+        eprintln!("{line}");
 
         if tail.len() == TAIL_LINES {
             tail.pop_front();
