@@ -1,5 +1,7 @@
 use zb_core::formula::formula_token;
 
+use crate::ui::Ui;
+
 pub enum PathKind {
     Prefix,
     Cellar,
@@ -9,13 +11,14 @@ pub fn execute(
     prefix: &std::path::Path,
     formulas: Vec<String>,
     kind: PathKind,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     if formulas.is_empty() {
         let path = match kind {
             PathKind::Prefix => prefix.to_path_buf(),
             PathKind::Cellar => prefix.join("Cellar"),
         };
-        println!("{}", path.display());
+        ui.data(path.display());
         return Ok(());
     }
 
@@ -25,7 +28,7 @@ pub fn execute(
             PathKind::Prefix => prefix.join("opt").join(token),
             PathKind::Cellar => prefix.join("Cellar").join(token),
         };
-        println!("{}", path.display());
+        ui.data(path.display());
     }
     Ok(())
 }

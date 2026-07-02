@@ -1,7 +1,8 @@
 use crate::commands::install::{self, InstallRequest};
-use crate::ui::{PromptDefault, StdUi, Ui};
+use crate::ui::{PromptDefault, Ui};
 use crate::utils::{PackageKind, normalize_package_name};
-use std::io::{BufRead, Write};
+#[cfg(test)]
+use std::io::BufRead;
 use std::path::PathBuf;
 
 pub struct ReinstallRequest {
@@ -21,7 +22,7 @@ pub struct ReinstallRequest {
 pub async fn execute(
     installer: &mut zb_io::Installer,
     request: ReinstallRequest,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let kind = if request.cask {
         PackageKind::Cask
@@ -43,15 +44,17 @@ pub async fn execute(
     }
 
     if request.ask {
-        let mut stdin = std::io::stdin().lock();
-        if !confirm_reinstall_with_reader(ui, &names, &mut stdin)? {
+        ui.status(format_reinstall_plan(&names));
+        // `Ui::confirm` reads piped stdin too and treats EOF as the default
+        // (No), so this never hangs in non-interactive sessions.
+        if !ui.confirm("Reinstall these formulae?", PromptDefault::No) {
+            ui.status("Reinstall cancelled.");
             return Ok(());
         }
     }
 
     for name in names {
-        ui.println(format!("Reinstalling {name}"))
-            .map_err(ui_error)?;
+        ui.status(format!("Reinstalling {name}"));
         installer.uninstall(&name)?;
         install::execute(
             installer,
@@ -78,19 +81,19 @@ pub async fn execute(
     Ok(())
 }
 
-fn confirm_reinstall_with_reader<O: Write, E: Write, R: BufRead>(
-    ui: &mut Ui<O, E>,
+/// Test mirror of the `--ask` flow in `execute` (plan, prompt, cancel note).
+#[cfg(test)]
+fn confirm_reinstall_with_reader<R: BufRead>(
+    ui: &mut Ui,
     names: &[String],
     reader: &mut R,
-) -> Result<bool, zb_core::Error> {
-    ui.println(format_reinstall_plan(names)).map_err(ui_error)?;
-    let answer = ui
-        .prompt_yes_no_with_reader("Reinstall these formulae? [y/N]", PromptDefault::No, reader)
-        .map_err(ui_error)?;
+) -> bool {
+    ui.status(format_reinstall_plan(names));
+    let answer = ui.confirm_with_reader("Reinstall these formulae?", PromptDefault::No, reader);
     if !answer {
-        ui.println("Reinstall cancelled.").map_err(ui_error)?;
+        ui.status("Reinstall cancelled.");
     }
-    Ok(answer)
+    answer
 }
 
 fn format_reinstall_plan(names: &[String]) -> String {
@@ -107,32 +110,22 @@ fn format_reinstall_plan(names: &[String]) -> String {
     output
 }
 
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::FileError {
-        message: format!("failed to write CLI output: {err}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::confirm_reinstall_with_reader;
-    use crate::ui::Ui;
+    use crate::ui::{Ui, UiOptions};
     use std::io::Cursor;
 
     #[test]
     fn confirm_reinstall_defaults_to_cancel() {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
+        let (mut ui, _out, err) = Ui::for_test(UiOptions::default());
         let mut input = Cursor::new("\n");
         let names = vec!["jq".to_string()];
 
-        let accepted = {
-            let mut ui = Ui::with_writers(&mut stdout, &mut stderr);
-            confirm_reinstall_with_reader(&mut ui, &names, &mut input).unwrap()
-        };
+        let accepted = confirm_reinstall_with_reader(&mut ui, &names, &mut input);
 
         assert!(!accepted);
-        let output = String::from_utf8(stdout).unwrap();
+        let output = err.contents();
         assert!(output.contains("Would reinstall 1 formula:\n    jq"));
         assert!(output.contains("Reinstall these formulae? [y/N]"));
         assert!(output.contains("Reinstall cancelled."));
@@ -140,18 +133,14 @@ mod tests {
 
     #[test]
     fn confirm_reinstall_accepts_yes() {
-        let mut stdout = Vec::new();
-        let mut stderr = Vec::new();
+        let (mut ui, _out, err) = Ui::for_test(UiOptions::default());
         let mut input = Cursor::new("y\n");
         let names = vec!["jq".to_string(), "ripgrep".to_string()];
 
-        let accepted = {
-            let mut ui = Ui::with_writers(&mut stdout, &mut stderr);
-            confirm_reinstall_with_reader(&mut ui, &names, &mut input).unwrap()
-        };
+        let accepted = confirm_reinstall_with_reader(&mut ui, &names, &mut input);
 
         assert!(accepted);
-        let output = String::from_utf8(stdout).unwrap();
+        let output = err.contents();
         assert!(output.contains("Would reinstall 2 formulae:\n    jq\n    ripgrep"));
         assert!(!output.contains("Reinstall cancelled."));
     }

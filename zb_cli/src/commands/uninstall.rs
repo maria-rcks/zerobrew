@@ -1,4 +1,4 @@
-use crate::ui::StdUi;
+use crate::ui::Ui;
 use crate::utils::{PackageKind, normalize_package_name};
 use console::style;
 
@@ -8,12 +8,12 @@ pub fn execute(
     all: bool,
     cask: bool,
     formula: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let formulas = if all {
         let installed = installer.list_installed()?;
         if installed.is_empty() {
-            ui.info("No formulas installed.").map_err(ui_error)?;
+            ui.info("No formulas installed.");
             return Ok(());
         }
         installed.into_iter().map(|k| k.name).collect()
@@ -35,18 +35,17 @@ pub fn execute(
     ui.heading(format!(
         "Uninstalling {}...",
         style(formulas.join(", ")).bold()
-    ))
-    .map_err(ui_error)?;
+    ));
 
     let mut errors: Vec<(String, zb_core::Error)> = Vec::new();
 
     if formulas.len() > 1 {
         for name in &formulas {
-            ui.step_start(name).map_err(ui_error)?;
+            ui.step_start(name);
             match installer.uninstall(name) {
-                Ok(()) => ui.step_ok().map_err(ui_error)?,
+                Ok(()) => ui.step_ok(),
                 Err(e) => {
-                    ui.step_fail().map_err(ui_error)?;
+                    ui.step_fail();
                     errors.push((name.clone(), e));
                 }
             }
@@ -63,16 +62,9 @@ pub fn execute(
                 "Failed to uninstall {}: {}",
                 style(name).bold(),
                 err
-            ))
-            .map_err(ui_error)?;
+            ));
         }
         // Return just the first error up. TODO: don't return errors from this fn?
         Err(errors.remove(0).1)
-    }
-}
-
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::StoreCorruption {
-        message: format!("failed to write CLI output: {err}"),
     }
 }

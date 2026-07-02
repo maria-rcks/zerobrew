@@ -1,9 +1,12 @@
+use crate::ui::Ui;
+
 pub async fn execute(
     installer: &mut zb_io::Installer,
     formulas: Vec<String>,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     if formulas.is_empty() {
-        println!("https://github.com/maria-rcks/zerobrew");
+        ui.data("https://github.com/maria-rcks/zerobrew");
         return Ok(());
     }
 
@@ -13,7 +16,7 @@ pub async fn execute(
             .homepage
             .as_deref()
             .unwrap_or("https://github.com/maria-rcks/zerobrew");
-        println!("{homepage}");
+        ui.data(homepage);
     }
     Ok(())
 }

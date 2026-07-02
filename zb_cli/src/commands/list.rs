@@ -1,10 +1,13 @@
 use console::style;
 
+use crate::ui::Ui;
+
 pub fn execute(
     installer: &mut zb_io::Installer,
     formulas: Vec<String>,
     versions: bool,
     json: bool,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let installed = installer.list_installed()?;
     if !formulas.is_empty() {
@@ -40,18 +43,21 @@ pub fn execute(
                 }
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&packages).unwrap());
+        ui.data_json(&packages)
+            .map_err(|e| zb_core::Error::ExecutionError {
+                message: format!("failed to serialize JSON output: {e}"),
+            })?;
         return Ok(());
     }
 
     if installed.is_empty() {
-        println!("No formulas installed.");
+        ui.status("No formulas installed.");
     } else {
         for keg in installed {
             if versions {
-                println!("{} {}", keg.name, keg.version);
+                ui.data(format!("{} {}", keg.name, keg.version));
             } else {
-                println!("{}", style(&keg.name).bold());
+                ui.data(style(&keg.name).bold());
             }
         }
     }

@@ -1,17 +1,18 @@
 use console::style;
 
-pub fn execute(installer: &mut zb_io::Installer) -> Result<(), zb_core::Error> {
+use crate::ui::Ui;
+
+pub fn execute(installer: &mut zb_io::Installer, ui: &mut Ui) -> Result<(), zb_core::Error> {
     let removed = installer.clear_api_cache()?;
     if removed == 0 {
-        println!("{} No cached entries to clear.", style("==>").cyan().bold());
+        ui.heading("No cached entries to clear.");
     } else {
-        println!(
-            "{} Cleared {} cached formula {}.",
-            style("==>").cyan().bold(),
+        ui.heading(format!(
+            "Cleared {} cached formula {}.",
             style(removed).green().bold(),
             if removed == 1 { "entry" } else { "entries" }
-        );
+        ));
     }
-    println!("{}", style("Run `zb outdated` to check for updates.").dim());
+    ui.status(style("Run `zb outdated` to check for updates.").dim());
     Ok(())
 }

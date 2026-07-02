@@ -1,3 +1,4 @@
+use crate::ui::Ui;
 use console::style;
 use std::path::PathBuf;
 use zb_io::Installer;
@@ -69,47 +70,42 @@ pub fn normalize_package_name(name: &str, kind: PackageKind) -> Result<String, z
     Ok(trimmed.to_string())
 }
 
-pub fn format_formula_suggestions(requested: &str, suggestions: &[String]) -> Option<String> {
+pub fn suggest_formula_matches(ui: &mut Ui, requested: &str, suggestions: &[String]) {
     if suggestions.is_empty() {
-        return None;
+        return;
     }
 
-    let mut rendered = format!(
-        "{} Formula '{}' was not found. Did you mean:\n",
-        style("Hint:").cyan().bold(),
+    ui.blank_line();
+    ui.hint(format!(
+        "Formula '{}' was not found. Did you mean:",
         style(requested).bold()
-    );
-
+    ));
     for suggestion in suggestions {
-        rendered.push_str(&format!("      {}\n", style(suggestion).green()));
+        ui.status(format!("      {}", style(suggestion).green()));
     }
 
     if let Some(top_suggestion) = suggestions.first() {
-        rendered.push_str("\n      Try installing the closest match with zerobrew:\n");
-        rendered.push_str(&format!(
-            "      {}\n",
+        ui.blank_line();
+        ui.status("      Try installing the closest match with zerobrew:");
+        ui.status(format!(
+            "      {}",
             style(format!("zb install {top_suggestion}")).cyan()
         ));
     }
-
-    Some(rendered)
-}
-
-pub fn suggest_formula_matches(requested: &str, suggestions: &[String]) {
-    if let Some(message) = format_formula_suggestions(requested, suggestions) {
-        eprintln!();
-        eprint!("{message}");
-        eprintln!();
-    }
+    ui.blank_line();
 }
 
 pub async fn suggest_missing_formula_matches(
     installer: &Installer,
     error: &zb_core::Error,
+    ui: &mut Ui,
 ) -> bool {
     if let zb_core::Error::MissingFormula { name } = error {
-        if let Ok(suggestions) = installer.suggest_formulas(name, 3).await {
-            suggest_formula_matches(name, &suggestions);
+        match installer.suggest_formulas(name, 3).await {
+            Ok(suggestions) => suggest_formula_matches(ui, name, &suggestions),
+            Err(lookup_error) => {
+                tracing::debug!("failed to look up formula suggestions: {lookup_error}");
+            }
         }
         return true;
     }
@@ -117,20 +113,17 @@ pub async fn suggest_missing_formula_matches(
     false
 }
 
-pub fn suggest_homebrew(formula: &str, error: &zb_core::Error) {
-    eprintln!();
-    eprintln!(
-        "{} This package can't be installed with zerobrew.",
-        style("Note:").yellow().bold()
-    );
-    eprintln!("      Error: {}", error);
-    eprintln!();
+pub fn suggest_homebrew(ui: &mut Ui, formula: &str, error: &zb_core::Error) {
+    ui.blank_line();
+    ui.note("This package can't be installed with zerobrew.");
+    ui.status(format!("      Error: {error}"));
+    ui.blank_line();
 
     // Error for Termux on android since homebrew
     // doesn't support bottles for this platform
     // details: https://github.com/lucasgelfond/zerobrew/pull/136
     if cfg!(target_os = "android") {
-        eprintln!(
+        ui.status(format!(
             "      {} {}",
             style(formula).yellow().bold(),
             style(
@@ -138,20 +131,20 @@ pub fn suggest_homebrew(formula: &str, error: &zb_core::Error) {
             )
             .red()
             .bold()
-        );
-        eprintln!(
+        ));
+        ui.status(format!(
             "      {}",
             style("and cannot be installed on it.").red().bold()
-        );
+        ));
     } else {
-        eprintln!("      Try installing with Homebrew instead:");
-        eprintln!(
+        ui.status("      Try installing with Homebrew instead:");
+        ui.status(format!(
             "      {}",
-            style(format!("brew install {}", formula)).cyan()
-        );
+            style(format!("brew install {formula}")).cyan()
+        ));
     }
 
-    eprintln!();
+    ui.blank_line();
 }
 
 pub fn get_root_path(cli_root: Option<PathBuf>) -> PathBuf {
@@ -196,9 +189,10 @@ mod tests {
     use zb_io::{Installer, Linker};
 
     use super::{
-        PackageKind, format_formula_suggestions, normalize_formula_name, normalize_package_name,
+        PackageKind, normalize_formula_name, normalize_package_name, suggest_formula_matches,
         suggest_missing_formula_matches,
     };
+    use crate::ui::{Ui, UiOptions};
 
     #[test]
     fn normalize_core_tap_formula() {
@@ -259,20 +253,31 @@ mod tests {
     }
 
     #[test]
-    fn format_formula_suggestions_renders_list() {
-        let rendered =
-            format_formula_suggestions("pythn", &["python".to_string(), "pytest".to_string()])
-                .unwrap();
+    fn suggest_formula_matches_renders_list_on_stderr() {
+        let (mut ui, out, err) = Ui::for_test(UiOptions::default());
 
+        suggest_formula_matches(
+            &mut ui,
+            "pythn",
+            &["python".to_string(), "pytest".to_string()],
+        );
+
+        let rendered = err.contents();
         assert!(rendered.contains("Did you mean"));
         assert!(rendered.contains("python"));
         assert!(rendered.contains("pytest"));
         assert!(rendered.contains("zb install python"));
+        assert!(out.contents().is_empty(), "hints must not pollute stdout");
     }
 
     #[test]
-    fn format_formula_suggestions_returns_none_for_empty_input() {
-        assert!(format_formula_suggestions("pythn", &[]).is_none());
+    fn suggest_formula_matches_prints_nothing_for_empty_input() {
+        let (mut ui, out, err) = Ui::for_test(UiOptions::default());
+
+        suggest_formula_matches(&mut ui, "pythn", &[]);
+
+        assert!(out.contents().is_empty());
+        assert!(err.contents().is_empty());
     }
 
     #[tokio::test]
@@ -318,7 +323,9 @@ mod tests {
             name: "pythn".to_string(),
         };
 
-        assert!(suggest_missing_formula_matches(&installer, &error).await);
+        let (mut ui, _out, err) = Ui::for_test(UiOptions::default());
+        assert!(suggest_missing_formula_matches(&installer, &error, &mut ui).await);
+        assert!(err.contents().contains("Did you mean"));
     }
 
     #[tokio::test]
@@ -349,6 +356,7 @@ mod tests {
             message: "bad formula".to_string(),
         };
 
-        assert!(!suggest_missing_formula_matches(&installer, &error).await);
+        let (mut ui, _out, _err) = Ui::for_test(UiOptions::default());
+        assert!(!suggest_missing_formula_matches(&installer, &error, &mut ui).await);
     }
 }

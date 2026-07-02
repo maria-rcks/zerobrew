@@ -1,16 +1,17 @@
 use console::style;
 
+use crate::ui::Ui;
+
 pub async fn execute(
     installer: &mut zb_io::Installer,
-    quiet: bool,
-    verbose: bool,
     json: bool,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let (outdated, warnings) = installer.check_outdated().await?;
 
     // Warnings always go to stderr (never pollute stdout, especially in --json mode)
     for warning in &warnings {
-        eprintln!("{} {}", style("Warning:").yellow().bold(), warning);
+        ui.warn(warning);
     }
 
     if json {
@@ -24,36 +25,34 @@ pub async fn execute(
                 })
             })
             .collect();
-        println!("{}", serde_json::to_string_pretty(&json_output).unwrap());
+        ui.data_json(&json_output)
+            .map_err(|e| zb_core::Error::ExecutionError {
+                message: format!("failed to serialize JSON output: {e}"),
+            })?;
         return Ok(());
     }
 
     if outdated.is_empty() {
-        if !quiet {
-            println!(
-                "{} All packages are up to date.",
-                style("==>").cyan().bold()
-            );
-        }
+        ui.heading("All packages are up to date.");
         return Ok(());
     }
 
     for pkg in &outdated {
-        if quiet {
-            println!("{}", pkg.name);
-        } else if verbose {
-            println!(
+        if ui.is_quiet() {
+            ui.data(&pkg.name);
+        } else if ui.verbose() > 0 {
+            ui.data(format!(
                 "{} {} {} {}",
                 pkg.name,
                 style(&pkg.installed_version).red(),
                 style("→").dim(),
                 style(&pkg.current_version).green(),
-            );
+            ));
         } else {
-            println!(
+            ui.data(format!(
                 "{} ({}) < {}",
                 pkg.name, pkg.installed_version, pkg.current_version
-            );
+            ));
         }
     }
 
