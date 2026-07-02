@@ -17,6 +17,11 @@ project history before this fork.
 - Validate root/prefix paths before passing to sudo to prevent shell injection ([#311](https://github.com/lucasgelfond/zerobrew/pull/311))
 
 ### Changed
+- **Breaking:** CLI output now follows a strict stdout=data, stderr=chrome
+  contract. Human messages such as `zb info <missing>` "not installed" text
+  and `zb list` empty-state text now go to stderr instead of stdout. Scripts
+  should consume package names and other data from stdout, prefer `--json`
+  where available, and use process exit codes for success/failure decisions.
 - Repository ownership, install documentation, and release automation now point
   at `maria-rcks/zerobrew`.
 - Split monolithic install module into focused submodules ([#312](https://github.com/lucasgelfond/zerobrew/pull/312))

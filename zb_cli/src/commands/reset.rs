@@ -53,9 +53,9 @@ pub fn execute(root: &Path, prefix: &Path, yes: bool, ui: &mut Ui) -> Result<(),
             failed = true;
         }
 
-        // Only fall back to sudo if we couldn't clear contents AND we can ask the user
+        // Only fall back to sudo if we couldn't clear contents AND sudo can prompt on a terminal.
         if failed {
-            if !ui.is_interactive() {
+            if !ui.can_prompt_external_command() {
                 return Err(zb_core::Error::FileError {
                     message: format!(
                         "failed to clear {} (permission denied, non-interactive mode)",

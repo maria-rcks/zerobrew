@@ -130,6 +130,7 @@ fn parse_concurrency(value: &str) -> Result<usize, String> {
 #[cfg(test)]
 mod tests {
     use super::{Cli, Commands};
+    use crate::ui::ColorChoice;
 
     #[test]
     fn accepts_positive_concurrency() {
@@ -156,6 +157,28 @@ mod tests {
     fn rejects_quiet_with_verbose() {
         let result = Cli::try_parse_from(["zb", "-v", "-q", "list"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn accepts_color_modes() {
+        let cases = [
+            ("auto", ColorChoice::Auto),
+            ("always", ColorChoice::Always),
+            ("never", ColorChoice::Never),
+        ];
+
+        for (value, expected) in cases {
+            let cli = Cli::try_parse_from(["zb", "--color", value, "list"]).unwrap();
+            assert_eq!(cli.color, expected);
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_color_mode() {
+        let result = Cli::try_parse_from(["zb", "--color", "sometimes", "list"]);
+        assert!(result.is_err());
+        let err = result.err().map(|e| e.to_string()).unwrap_or_default();
+        assert!(err.contains("auto, always, or never"));
     }
 
     #[test]

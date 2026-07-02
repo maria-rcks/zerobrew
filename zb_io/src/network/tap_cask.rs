@@ -15,6 +15,10 @@ static SHA_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*sha256\s+(?:["']([0-9a-f]{64}|no_check)["']|:(no_check))"#)
         .expect("SHA_RE must compile")
 });
+static SHA_KEYED_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"([A-Za-z0-9_]+):\s*["']([0-9a-f]{64}|no_check)["']"#)
+        .expect("SHA_KEYED_RE must compile")
+});
 static NAME_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*name\s+["']([^"']+)["']"#).expect("NAME_RE must compile")
 });
@@ -235,23 +239,76 @@ fn optional_capture(regex: &Regex, source: &str) -> Option<String> {
 }
 
 fn required_sha(source: &str) -> Result<String, Error> {
-    let Some(cap) = SHA_RE.captures(source) else {
-        return Err(Error::InvalidArgument {
-            message: "failed to parse tap cask Ruby: missing sha256".to_string(),
-        });
-    };
-    cap.get(1)
-        .or_else(|| cap.get(2))
-        .map(|m| m.as_str().to_string())
-        .ok_or_else(|| Error::InvalidArgument {
-            message: "failed to parse tap cask Ruby: missing sha256".to_string(),
-        })
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if !trimmed.starts_with("sha256 ") {
+            continue;
+        }
+
+        if let Some(cap) = SHA_RE.captures(trimmed)
+            && let Some(value) = cap.get(1).or_else(|| cap.get(2))
+        {
+            return Ok(value.as_str().to_string());
+        }
+
+        let keyed = SHA_KEYED_RE
+            .captures_iter(trimmed)
+            .filter_map(|cap| {
+                let key = cap.get(1)?.as_str();
+                let value = cap.get(2)?.as_str();
+                Some((key, value))
+            })
+            .collect::<Vec<_>>();
+
+        for preferred in preferred_sha_keys() {
+            if let Some((_, value)) = keyed.iter().find(|(key, _)| key == preferred) {
+                return Ok((*value).to_string());
+            }
+        }
+
+        if let Some((_, value)) = keyed.first() {
+            return Ok((*value).to_string());
+        }
+    }
+
+    Err(Error::InvalidArgument {
+        message: "failed to parse tap cask Ruby: missing sha256".to_string(),
+    })
+}
+
+fn preferred_sha_keys() -> &'static [&'static str] {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        &["x86_64_linux", "x86_64", "intel"]
+    }
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    {
+        &["arm64_linux", "arm64", "arm"]
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    {
+        &["arm64", "arm"]
+    }
+    #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
+    {
+        &["intel", "x86_64"]
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", target_arch = "x86_64"),
+        all(target_os = "linux", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "aarch64"),
+        all(target_os = "macos", target_arch = "x86_64")
+    )))]
+    {
+        &[]
+    }
 }
 
 fn extract_cask_body(source: &str) -> Option<&str> {
     let mut offset = 0usize;
     let mut body_start: Option<usize> = None;
     let mut depth = 0usize;
+    let mut heredoc_end: Option<String> = None;
 
     for line in source.split_inclusive('\n') {
         let line_start = offset;
@@ -264,6 +321,19 @@ fn extract_cask_body(source: &str) -> Option<&str> {
                 depth = 1;
             }
             continue;
+        }
+
+        if let Some(ref terminator) = heredoc_end {
+            if trimmed == terminator {
+                heredoc_end = None;
+            }
+            continue;
+        }
+
+        if let Some(cap) = HEREDOC_RE.captures(trimmed)
+            && let Some(terminator) = cap.get(1)
+        {
+            heredoc_end = Some(terminator.as_str().to_string());
         }
 
         let depth_before = depth;
@@ -375,5 +445,50 @@ end
             "$HOMEBREW_PREFIX"
         );
         assert_eq!(cask["artifacts"][3]["stage_only"][0], true);
+    }
+
+    #[test]
+    fn parses_platform_qualified_sha256() {
+        let arm_sha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        let intel_sha = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let rb = format!(
+            r#"
+cask "demo" do
+  version "2.0.0"
+  sha256 arm: "{arm_sha}", intel: "{intel_sha}"
+  url "https://example.com/demo.zip"
+
+  binary "demo"
+end
+"#
+        );
+
+        let cask = parse_tap_cask_ruby(&spec(), &rb).unwrap();
+
+        #[cfg(any(target_arch = "aarch64", target_arch = "arm"))]
+        assert_eq!(cask["sha256"], arm_sha);
+        #[cfg(not(any(target_arch = "aarch64", target_arch = "arm")))]
+        assert_eq!(cask["sha256"], intel_sha);
+    }
+
+    #[test]
+    fn extract_cask_body_ignores_end_inside_heredoc() {
+        let rb = r#"
+cask "demo" do
+  version "2.0.0"
+  sha256 :no_check
+  url "https://example.com/demo.zip"
+
+  caveats <<~EOS
+    end
+  EOS
+
+  binary "demo"
+end
+"#;
+
+        let cask = parse_tap_cask_ruby(&spec(), rb).unwrap();
+
+        assert_eq!(cask["artifacts"][0]["binary"][0][0], "demo");
     }
 }

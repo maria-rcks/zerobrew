@@ -457,12 +457,12 @@ end
             .and_then(|mut f| f.write_all(updated_config.as_bytes()));
 
         if let Err(e) = write_result {
-            ui.note(format!(
+            ui.warn(format!(
                 "Could not write to {} due to error: {}",
                 config_file, e
             ));
-            ui.info(format!("Please add the following to {}:", config_file));
-            ui.info(&managed_block);
+            ui.status(format!("Please add the following to {}:", config_file));
+            ui.status(managed_block.trim_end());
         } else {
             ui.info(format!("Updated zerobrew configuration in {}", config_file));
             ui.info(format!(
@@ -766,6 +766,78 @@ mod tests {
 
         // File should not be created
         assert!(!shell_config.exists());
+    }
+
+    #[test]
+    fn add_to_path_no_modify_shell_writes_instructions_to_stderr_only() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        let prefix = tmp.path().join("prefix");
+        let root = tmp.path().join("root");
+        let zerobrew_dir = "/home/user/.zerobrew";
+        let zerobrew_bin = "/home/user/.zerobrew/bin";
+
+        fs::create_dir(&prefix).unwrap();
+        fs::create_dir(&root).unwrap();
+
+        let (mut ui, out, err) = Ui::for_test(UiOptions::default());
+        add_to_path_with_env(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            true,
+            ShellEnv {
+                home: home.to_str().unwrap(),
+                shell: "/bin/bash",
+                zdotdir: None,
+            },
+            &mut ui,
+        )
+        .unwrap();
+
+        assert!(out.contents().is_empty());
+        let rendered = err.contents();
+        assert!(rendered.contains("Skipped shell configuration (--no-modify-path)"));
+        assert!(rendered.contains("To use zerobrew, add"));
+    }
+
+    #[test]
+    fn add_to_path_write_failure_prints_unprefixed_shell_block() {
+        let tmp = TempDir::new().unwrap();
+        let home = tmp.path();
+        let prefix = tmp.path().join("prefix");
+        let root = tmp.path().join("root");
+        let shell_config = home.join(".bashrc");
+        let zerobrew_dir = "/home/user/.zerobrew";
+        let zerobrew_bin = "/home/user/.zerobrew/bin";
+
+        fs::create_dir(&prefix).unwrap();
+        fs::create_dir(&root).unwrap();
+        fs::create_dir(&shell_config).unwrap();
+
+        let (mut ui, out, err) = Ui::for_test(UiOptions::default());
+        add_to_path_with_env(
+            &prefix,
+            zerobrew_dir,
+            zerobrew_bin,
+            &root,
+            false,
+            ShellEnv {
+                home: home.to_str().unwrap(),
+                shell: "/bin/bash",
+                zdotdir: None,
+            },
+            &mut ui,
+        )
+        .unwrap();
+
+        assert!(out.contents().is_empty());
+        let rendered = err.contents();
+        assert!(rendered.contains("Warning: Could not write to"));
+        assert!(rendered.contains("Please add the following to"));
+        assert!(rendered.contains(ZB_BLOCK_START));
+        assert!(!rendered.contains("Info: # >>> zerobrew >>>"));
     }
 
     #[test]

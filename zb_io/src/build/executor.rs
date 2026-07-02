@@ -273,6 +273,47 @@ end
     }
 
     #[tokio::test]
+    async fn run_build_includes_stdout_tail_when_stderr_is_empty() {
+        let Some(ruby) = find_ruby().await.ok() else {
+            return;
+        };
+
+        let tmp = tempfile::tempdir().unwrap();
+        let source_root = tmp.path().join("source");
+        std::fs::create_dir_all(&source_root).unwrap();
+
+        let shim_path = tmp.path().join("shim.rb");
+        std::fs::write(&shim_path, SHIM_RUBY).unwrap();
+
+        let formula_path = tmp.path().join("foo.rb");
+        std::fs::write(
+            &formula_path,
+            r#"
+class Foo < Formula
+  def install
+    system "sh", "-c", "echo boom-from-stdout; exit 7"
+  end
+end
+"#,
+        )
+        .unwrap();
+
+        let prefix = tmp.path().join("prefix");
+        let cellar = prefix.join("Cellar");
+        std::fs::create_dir_all(&cellar).unwrap();
+
+        let env = shim_env(&prefix, &cellar, &formula_path, "foo", "1.0.0");
+
+        let err = run_build(&ruby, &shim_path, &source_root, &env)
+            .await
+            .unwrap_err();
+
+        let message = err.to_string();
+        assert!(message.contains("source build failed"));
+        assert!(message.contains("boom-from-stdout"));
+    }
+
+    #[tokio::test]
     async fn run_build_supports_utils_safe_popen_read_for_completions() {
         let Some(ruby) = find_ruby().await.ok() else {
             return;
