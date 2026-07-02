@@ -4,6 +4,8 @@ use std::sync::LazyLock;
 use regex::Regex;
 use std::path::Path;
 
+use crate::ui::Ui;
+
 static OPTION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?m)^\s*option\s+"([^"]+)"\s*,\s*"([^"]+)""#).expect("OPTION_RE must compile")
 });
@@ -18,12 +20,13 @@ pub async fn execute(
     formulas: Vec<String>,
     compact: bool,
     command: Option<String>,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     if let Some(command) = command {
-        return print_command_options(&command, compact);
+        return print_command_options(&command, compact, ui);
     }
     if formulas.is_empty() {
-        print_global_options(compact);
+        print_global_options(compact, ui);
         return Ok(());
     }
 
@@ -36,9 +39,9 @@ pub async fn execute(
         }
         options.sort_by(|a, b| a.0.cmp(&b.0));
         if multiple {
-            println!("{formula}");
+            ui.data(&formula);
         }
-        print_options(&options, compact);
+        print_options(&options, compact, ui);
     }
 
     Ok(())
@@ -61,9 +64,9 @@ async fn formula_source(
     installer.formula_source(formula).await
 }
 
-fn print_global_options(compact: bool) {
+fn print_global_options(compact: bool, ui: &mut Ui) {
     let options = global_options();
-    print_options(&options, compact);
+    print_options(&options, compact, ui);
 }
 
 fn global_options() -> Vec<(String, String)> {
@@ -74,9 +77,9 @@ fn global_options() -> Vec<(String, String)> {
     ]
 }
 
-fn print_command_options(command: &str, compact: bool) -> Result<(), zb_core::Error> {
+fn print_command_options(command: &str, compact: bool, ui: &mut Ui) -> Result<(), zb_core::Error> {
     if command == "install" {
-        print_global_options(compact);
+        print_global_options(compact, ui);
         return Ok(());
     }
 
@@ -111,8 +114,8 @@ fn format_options(options: &[(String, String)], compact: bool) -> String {
     output
 }
 
-fn print_options(options: &[(String, String)], compact: bool) {
-    print!("{}", format_options(options, compact));
+fn print_options(options: &[(String, String)], compact: bool, ui: &mut Ui) {
+    ui.data_raw(format_options(options, compact));
 }
 
 fn formula_options(source: &str) -> Vec<(String, String)> {
@@ -137,6 +140,7 @@ fn formula_options(source: &str) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::{format_options, formula_options, global_options, print_command_options};
+    use crate::ui::{Ui, UiOptions};
 
     #[test]
     fn formula_options_extracts_declared_and_recommended_options() {
@@ -192,7 +196,8 @@ mod tests {
 
     #[test]
     fn command_options_error_uses_zerobrew_branding() {
-        let err = print_command_options("unknown", false).unwrap_err();
+        let (mut ui, _out, _err) = Ui::for_test(UiOptions::default());
+        let err = print_command_options("unknown", false, &mut ui).unwrap_err();
 
         assert!(err.to_string().contains("Unknown command: zb unknown"));
     }

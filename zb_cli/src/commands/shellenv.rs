@@ -1,7 +1,14 @@
 use std::path::Path;
 
-pub fn execute(root: &Path, prefix: &Path, shell: Option<String>) -> Result<(), zb_core::Error> {
-    print!("{}", render_shellenv(root, prefix, shell.as_deref()));
+use crate::ui::Ui;
+
+pub fn execute(
+    root: &Path,
+    prefix: &Path,
+    shell: Option<String>,
+    ui: &mut Ui,
+) -> Result<(), zb_core::Error> {
+    ui.data_raw(render_shellenv(root, prefix, shell.as_deref()));
     Ok(())
 }
 

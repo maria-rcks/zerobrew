@@ -47,6 +47,15 @@ pub struct Cli {
     )]
     pub quiet: bool,
 
+    #[arg(
+        long,
+        global = true,
+        default_value = "auto",
+        value_parser = parse_color,
+        help = "When to use colored output (auto, always, never)"
+    )]
+    pub color: crate::ui::ColorChoice,
+
     #[command(subcommand)]
     pub command: Commands,
 }
@@ -102,6 +111,10 @@ fn normalize_global_prefix_args(args: &mut Vec<OsString>) {
 fn value_is_probably_path(value: &OsString) -> bool {
     let value = value.to_string_lossy();
     value.starts_with('/') || value.starts_with('.')
+}
+
+fn parse_color(value: &str) -> Result<crate::ui::ColorChoice, String> {
+    value.parse()
 }
 
 fn parse_concurrency(value: &str) -> Result<usize, String> {

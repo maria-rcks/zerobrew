@@ -1,23 +1,26 @@
 use chrono::{DateTime, Local};
 use console::style;
 
+use crate::ui::Ui;
+
 pub async fn execute(
     installer: &mut zb_io::Installer,
     formula: String,
     show_versions: bool,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     if show_versions {
-        print_versions(installer, &formula).await?;
+        print_versions(installer, &formula, ui).await?;
         return Ok(());
     }
 
     if let Some(keg) = installer.get_installed(&formula) {
-        print_field("Name:", style(&keg.name).bold());
-        print_field("Version:", &keg.version);
-        print_field("Store key:", store_key_prefix(&keg.store_key));
-        print_field("Installed:", format_timestamp(keg.installed_at));
+        print_field(ui, "Name:", style(&keg.name).bold());
+        print_field(ui, "Version:", &keg.version);
+        print_field(ui, "Store key:", store_key_prefix(&keg.store_key));
+        print_field(ui, "Installed:", format_timestamp(keg.installed_at));
     } else {
-        println!("Formula '{}' is not installed.", formula);
+        ui.status(format!("Formula '{}' is not installed.", formula));
     }
 
     Ok(())
@@ -26,9 +29,14 @@ pub async fn execute(
 async fn print_versions(
     installer: &mut zb_io::Installer,
     formula: &str,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let formula_info = installer.formula_metadata(formula).await?;
-    println!("{} {}", formula_info.name, formula_info.effective_version());
+    ui.data(format!(
+        "{} {}",
+        formula_info.name,
+        formula_info.effective_version()
+    ));
     Ok(())
 }
 
@@ -36,8 +44,10 @@ fn store_key_prefix(store_key: &str) -> &str {
     &store_key[..store_key.len().min(12)]
 }
 
-fn print_field(label: &str, value: impl std::fmt::Display) {
-    println!("{:<10}  {}", style(label).dim(), value);
+fn print_field(ui: &mut Ui, label: &str, value: impl std::fmt::Display) {
+    // Width is applied to the StyledObject directly (not a pre-rendered
+    // String) so padding stays correct when color is enabled.
+    ui.data(format!("{:<10}  {}", style(label).dim(), value));
 }
 
 fn format_timestamp(timestamp: i64) -> String {
@@ -75,7 +85,8 @@ fn format_timestamp(timestamp: i64) -> String {
 mod tests {
     use std::fs;
 
-    use super::{print_versions, store_key_prefix};
+    use super::{print_field, print_versions, store_key_prefix};
+    use crate::ui::{Ui, UiOptions};
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -115,6 +126,16 @@ mod tests {
         assert_eq!(store_key_prefix("1234567890abcdef"), "1234567890ab");
     }
 
+    #[test]
+    fn print_field_writes_aligned_data_to_stdout() {
+        let (mut ui, out, err) = Ui::for_test(UiOptions::default());
+
+        print_field(&mut ui, "Name:", "jq");
+
+        assert_eq!(out.contents(), "Name:       jq\n");
+        assert!(err.contents().is_empty());
+    }
+
     #[tokio::test]
     async fn print_versions_fetches_formula_metadata() {
         let mock_server = MockServer::start().await;
@@ -132,10 +153,15 @@ mod tests {
             .mount(&mock_server)
             .await;
 
-        print_versions(&mut installer, "jq").await.unwrap();
+        let (mut ui, out, err) = Ui::for_test(UiOptions::default());
+        print_versions(&mut installer, "jq", &mut ui).await.unwrap();
 
         let requests = mock_server.received_requests().await.unwrap();
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].url.path(), "/formula/jq.json");
+
+        // Version output is data: stdout only.
+        assert_eq!(out.contents(), "jq 1.7.1_2\n");
+        assert!(err.contents().is_empty());
     }
 }

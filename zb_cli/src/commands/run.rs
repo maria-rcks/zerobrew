@@ -5,6 +5,7 @@ use std::process::Command;
 use zb_core::formula_token;
 use zb_io::Installer;
 
+use crate::ui::Ui;
 use crate::utils::{normalize_formula_name, suggest_missing_formula_matches};
 
 /// Prepare a package for execution by ensuring it's installed
@@ -12,17 +13,17 @@ use crate::utils::{normalize_formula_name, suggest_missing_formula_matches};
 pub async fn prepare_execution(
     installer: &mut Installer,
     formula: &str,
+    ui: &mut Ui,
 ) -> Result<PathBuf, zb_core::Error> {
     let normalized = normalize_formula_name(formula)?;
 
     let was_installed = installer.is_installed(&normalized);
 
     if !was_installed {
-        println!(
-            "{} Installing {} temporarily...",
-            style("==>").cyan().bold(),
+        ui.heading(format!(
+            "Installing {} temporarily...",
             style(&normalized).green()
-        );
+        ));
 
         let plan = installer.plan(std::slice::from_ref(&normalized)).await?;
         installer.execute(plan, false).await?;
@@ -55,26 +56,19 @@ pub async fn execute(
     installer: &mut Installer,
     formula: String,
     args: Vec<String>,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
-    println!(
-        "{} Running {}...",
-        style("==>").cyan().bold(),
-        style(&formula).bold()
-    );
+    ui.heading(format!("Running {}...", style(&formula).bold()));
 
-    let bin_path = match prepare_execution(installer, &formula).await {
+    let bin_path = match prepare_execution(installer, &formula, ui).await {
         Ok(path) => path,
         Err(e) => {
-            let _ = suggest_missing_formula_matches(installer, &e).await;
+            let _ = suggest_missing_formula_matches(installer, &e, ui).await;
             return Err(e);
         }
     };
 
-    println!(
-        "{} Executing {}...",
-        style("==>").cyan().bold(),
-        style(&formula).green()
-    );
+    ui.heading(format!("Executing {}...", style(&formula).green()));
 
     let mut cmd = Command::new(&bin_path);
     cmd.args(&args);
@@ -132,6 +126,7 @@ fn detect_runtime_prefix_with_env(bin_path: &Path, env_prefix: Option<&str>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ui::UiOptions;
     use std::fs;
     use tempfile::TempDir;
     use wiremock::matchers::{method, path};
@@ -249,7 +244,10 @@ mod tests {
 
         assert!(!installer.is_installed("testrun"));
 
-        let bin_path = prepare_execution(&mut installer, "testrun").await.unwrap();
+        let (mut ui, _out, _err) = Ui::for_test(UiOptions::default());
+        let bin_path = prepare_execution(&mut installer, "testrun", &mut ui)
+            .await
+            .unwrap();
 
         assert!(installer.is_installed("testrun"));
         assert!(!prefix.join("bin/testrun").exists());
@@ -332,7 +330,8 @@ mod tests {
             .unwrap();
         assert!(installer.is_installed("alreadyinstalled"));
 
-        let bin_path = prepare_execution(&mut installer, "alreadyinstalled")
+        let (mut ui, _out, _err) = Ui::for_test(UiOptions::default());
+        let bin_path = prepare_execution(&mut installer, "alreadyinstalled", &mut ui)
             .await
             .unwrap();
 
@@ -380,7 +379,8 @@ mod tests {
             root.join("locks"),
         );
 
-        let result = prepare_execution(&mut installer, "nonexistent").await;
+        let (mut ui, _out, _err) = Ui::for_test(UiOptions::default());
+        let result = prepare_execution(&mut installer, "nonexistent", &mut ui).await;
         assert!(result.is_err());
     }
 

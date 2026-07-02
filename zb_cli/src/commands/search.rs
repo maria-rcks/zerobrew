@@ -1,25 +1,30 @@
-use console::style;
+use crate::ui::Ui;
+
+pub struct SearchRequest {
+    pub text: Vec<String>,
+    pub formula: bool,
+    pub cask: bool,
+    pub name: bool,
+    pub all: bool,
+    pub desc: bool,
+}
 
 pub async fn execute(
     installer: &mut zb_io::Installer,
-    text: Vec<String>,
-    formula: bool,
-    cask: bool,
-    name: bool,
-    all: bool,
-    desc: bool,
+    request: SearchRequest,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
-    if cask && !formula {
+    if request.cask && !request.formula {
         return Err(zb_core::Error::UnsupportedFormula {
-            name: text.join(" "),
+            name: request.text.join(" "),
             reason: "cask search is not supported yet".to_string(),
         });
     }
 
-    let query = text.join(" ");
-    let results = if name || all || desc {
+    let query = request.text.join(" ");
+    let results = if request.name || request.all || request.desc {
         installer
-            .search_formula_index(&query, name && !all && !desc)
+            .search_formula_index(&query, request.name && !request.all && !request.desc)
             .await?
     } else {
         installer.suggest_formulas(&query, 20).await?
@@ -29,9 +34,9 @@ pub async fn execute(
         return Err(zb_core::Error::MissingFormula { name: query });
     }
 
-    println!("{}", style("Formulae").cyan().bold());
+    ui.heading("Formulae");
     for result in results {
-        println!("{result}");
+        ui.data(result);
     }
 
     Ok(())

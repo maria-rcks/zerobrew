@@ -1,4 +1,4 @@
-use crate::ui::StdUi;
+use crate::ui::Ui;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -9,13 +9,13 @@ pub async fn execute(
     formulas: Vec<String>,
     cask: bool,
     print_path: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let repository = repository_path(repository);
     let paths = edit_paths(&repository, &formulas, cask);
     if print_path {
         for path in paths {
-            ui.println(path.display()).map_err(ui_error)?;
+            ui.data(path.display());
         }
         return Ok(());
     }
@@ -145,12 +145,6 @@ fn editor() -> Result<String, zb_core::Error> {
     Err(zb_core::Error::ExecutionError {
         message: "no editor set; set $HOMEBREW_EDITOR or $EDITOR".to_string(),
     })
-}
-
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::FileError {
-        message: format!("failed to write CLI output: {err}"),
-    }
 }
 
 #[cfg(test)]

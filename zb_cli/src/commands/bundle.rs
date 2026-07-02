@@ -5,12 +5,12 @@ use std::time::Instant;
 
 use super::install;
 use crate::cli::BundleCommands;
-use crate::ui::StdUi;
+use crate::ui::Ui;
 
 pub async fn execute(
     installer: &mut zb_io::Installer,
     command: Option<BundleCommands>,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     match command.unwrap_or(BundleCommands::Install {
         file: PathBuf::from("Brewfile"),
@@ -19,7 +19,7 @@ pub async fn execute(
         BundleCommands::Install { file, no_link } => {
             install_from_file(installer, &file, no_link, ui).await
         }
-        BundleCommands::Dump { file, force } => dump_to_file(installer, &file, force),
+        BundleCommands::Dump { file, force } => dump_to_file(installer, &file, force, ui),
     }
 }
 
@@ -27,15 +27,14 @@ async fn install_from_file(
     installer: &mut zb_io::Installer,
     manifest_path: &Path,
     no_link: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let formulas = load_manifest(manifest_path)?;
-    println!(
-        "{} Installing {} formulas from {}...",
-        style("==>").cyan().bold(),
+    ui.heading(format!(
+        "Installing {} formulas from {}...",
         style(formulas.len()).green().bold(),
         manifest_path.display()
-    );
+    ));
 
     let start = Instant::now();
     for formula in formulas {
@@ -61,11 +60,10 @@ async fn install_from_file(
         .await?;
     }
 
-    println!(
-        "{} Finished installing manifest in {:.2}s",
-        style("==>").cyan().bold(),
+    ui.heading(format!(
+        "Finished installing manifest in {:.2}s",
         start.elapsed().as_secs_f64()
-    );
+    ));
     Ok(())
 }
 
@@ -73,6 +71,7 @@ fn dump_to_file(
     installer: &mut zb_io::Installer,
     file_path: &Path,
     force: bool,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     if file_path.exists() && !force {
         return Err(zb_core::Error::FileError {
@@ -93,12 +92,11 @@ fn dump_to_file(
         message: format!("failed to write {}: {}", file_path.display(), e),
     })?;
 
-    println!(
-        "{} Dumped {} packages to {}",
-        style("==>").cyan().bold(),
+    ui.heading(format!(
+        "Dumped {} packages to {}",
         style(installed.len()).green().bold(),
         file_path.display()
-    );
+    ));
 
     Ok(())
 }

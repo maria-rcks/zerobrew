@@ -1,19 +1,18 @@
 use console::style;
 
-use crate::ui::StdUi;
+use crate::ui::Ui;
 
 pub fn execute(
     installer: &mut zb_io::Installer,
     repair: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
-    ui.heading("Running diagnostics...").map_err(ui_error)?;
+    ui.heading("Running diagnostics...");
 
     let report = installer.doctor()?;
 
     if report.is_healthy() {
-        ui.println(format!("    {} No issues found", style("✓").green()))
-            .map_err(ui_error)?;
+        ui.success("No issues found");
         return Ok(());
     }
 
@@ -21,8 +20,7 @@ pub fn execute(
         ui.warn(format!(
             "Orphaned cellar keg: {}/{} (no DB record)",
             orphan.name, orphan.version
-        ))
-        .map_err(ui_error)?;
+        ));
     }
 
     for missing in &report.missing_cellar_kegs {
@@ -31,16 +29,14 @@ pub fn execute(
             missing.name,
             missing.version,
             missing.expected_path.display()
-        ))
-        .map_err(ui_error)?;
+        ));
     }
 
     for key in &report.orphaned_store_entries {
         ui.warn(format!(
             "Orphaned store entry: {} (no DB reference)",
             &key[..key.len().min(12)]
-        ))
-        .map_err(ui_error)?;
+        ));
     }
 
     for stale in &report.stale_store_refs {
@@ -56,21 +52,18 @@ pub fn execute(
             &stale.store_key[..stale.store_key.len().min(12)],
             stale.refcount,
             status
-        ))
-        .map_err(ui_error)?;
+        ));
     }
 
     for link in &report.broken_symlinks {
-        ui.warn(format!("Broken symlink: {}", link.display()))
-            .map_err(ui_error)?;
+        ui.warn(format!("Broken symlink: {}", link.display()));
     }
 
     if report.stale_keg_file_records > 0 {
         ui.warn(format!(
             "{} stale keg_files records (referencing uninstalled kegs)",
             report.stale_keg_file_records
-        ))
-        .map_err(ui_error)?;
+        ));
     }
 
     let issue_count = report.orphaned_cellar_kegs.len()
@@ -80,25 +73,23 @@ pub fn execute(
         + report.broken_symlinks.len()
         + usize::from(report.stale_keg_file_records > 0);
 
-    ui.blank_line().map_err(ui_error)?;
+    ui.blank_line();
     ui.heading(format!(
         "Found {} {}",
         style(issue_count).yellow().bold(),
         if issue_count == 1 { "issue" } else { "issues" }
-    ))
-    .map_err(ui_error)?;
+    ));
 
     if !repair {
-        ui.println(format!(
+        ui.status(format!(
             "    Run {} to fix",
             style("zb doctor --repair").bold()
-        ))
-        .map_err(ui_error)?;
+        ));
         return Ok(());
     }
 
-    ui.blank_line().map_err(ui_error)?;
-    ui.heading("Repairing...").map_err(ui_error)?;
+    ui.blank_line();
+    ui.heading("Repairing...");
 
     let summary = installer.repair(&report)?;
 
@@ -107,58 +98,50 @@ pub fn execute(
             "Removed {} orphaned cellar {}",
             summary.removed_orphaned_kegs,
             pluralize("keg", summary.removed_orphaned_kegs)
-        ))
-        .map_err(ui_error)?;
+        ));
     }
     if summary.removed_missing_records > 0 {
         ui.bullet(format!(
             "Removed {} stale DB {}",
             summary.removed_missing_records,
             pluralize("record", summary.removed_missing_records)
-        ))
-        .map_err(ui_error)?;
+        ));
     }
     if summary.fixed_store_refs > 0 {
         ui.bullet(format!(
             "Fixed {} store {}",
             summary.fixed_store_refs,
             pluralize("ref", summary.fixed_store_refs)
-        ))
-        .map_err(ui_error)?;
+        ));
     }
     if summary.removed_orphaned_store_entries > 0 {
         ui.bullet(format!(
             "Removed {} orphaned store {}",
             summary.removed_orphaned_store_entries,
             pluralize("entry", summary.removed_orphaned_store_entries)
-        ))
-        .map_err(ui_error)?;
+        ));
     }
     if summary.removed_broken_symlinks > 0 {
         ui.bullet(format!(
             "Removed {} broken {}",
             summary.removed_broken_symlinks,
             pluralize("symlink", summary.removed_broken_symlinks)
-        ))
-        .map_err(ui_error)?;
+        ));
     }
     if summary.pruned_keg_file_records > 0 {
         ui.bullet(format!(
             "Pruned {} stale keg_files {}",
             summary.pruned_keg_file_records,
             pluralize("record", summary.pruned_keg_file_records)
-        ))
-        .map_err(ui_error)?;
+        ));
     }
 
-    ui.blank_line().map_err(ui_error)?;
-    ui.println(format!(
-        "    {} Applied {} {}",
-        style("✓").green(),
+    ui.blank_line();
+    ui.success(format!(
+        "Applied {} {}",
         summary.total_fixes(),
         pluralize("fix", summary.total_fixes())
-    ))
-    .map_err(ui_error)?;
+    ));
 
     Ok(())
 }
@@ -177,11 +160,5 @@ fn pluralize(word: &str, count: usize) -> &str {
             "issue" => "issues",
             _ => word,
         }
-    }
-}
-
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::StoreCorruption {
-        message: format!("failed to write CLI output: {err}"),
     }
 }

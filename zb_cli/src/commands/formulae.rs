@@ -1,14 +1,17 @@
+use crate::ui::Ui;
+
 pub async fn execute(
     installer: &mut zb_io::Installer,
     versions: bool,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     if versions {
         for (name, version) in installer.list_formula_versions().await? {
-            println!("{name} {version}");
+            ui.data(format!("{name} {version}"));
         }
     } else {
         for name in installer.list_formula_names().await? {
-            println!("{name}");
+            ui.data(name);
         }
     }
 

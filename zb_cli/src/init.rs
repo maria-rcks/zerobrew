@@ -3,7 +3,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use crate::ui::{PromptDefault, StdUi};
+use crate::ui::{PromptDefault, Ui};
 use zb_io::validate_privileged_path;
 
 #[derive(Debug)]
@@ -54,7 +54,7 @@ pub fn run_init(
     root: &Path,
     prefix: &Path,
     no_modify_path: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), InitError> {
     validate_privileged_path(root)
         .map_err(|e| InitError::Message(format!("invalid root path: {e}")))?;
@@ -70,17 +70,17 @@ pub fn run_init(
                 prefix_str,
                 prefix_str.len(),
                 MAX_PREFIX_LEN_MACOS,
-            ))?;
-            ui.info("Path-sensitive packages (e.g. git, curl) will fail to install.")?;
+            ));
+            ui.info("Path-sensitive packages (e.g. git, curl) will fail to install.");
             ui.info(format!(
                 "Consider a shorter prefix, e.g.: {}",
                 style("zb init <root> /opt/zerobrew").cyan(),
-            ))?;
-            ui.blank_line()?;
+            ));
+            ui.blank_line();
         }
     }
 
-    ui.heading("Initializing zerobrew...")?;
+    ui.heading("Initializing zerobrew...");
 
     let zerobrew_dir = match std::env::var("ZEROBREW_DIR") {
         Ok(dir) => dir,
@@ -115,7 +115,7 @@ pub fn run_init(
     });
 
     if need_sudo {
-        ui.info("Creating directories (requires sudo)...")?;
+        ui.info("Creating directories (requires sudo)...");
 
         for dir in &dirs_to_create {
             let status = Command::new("sudo")
@@ -183,7 +183,7 @@ pub fn run_init(
         ui,
     )?;
 
-    ui.heading("Initialization complete!")?;
+    ui.heading("Initialization complete!");
 
     Ok(())
 }
@@ -245,7 +245,7 @@ fn add_to_path(
     zerobrew_bin: &str,
     root: &Path,
     no_modify_path: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), InitError> {
     let shell = std::env::var("SHELL").unwrap_or_default();
     let home = std::env::var("HOME").map_err(|_| InitError::Message("HOME not set".to_string()))?;
@@ -273,7 +273,7 @@ fn add_to_path_with_env(
     root: &Path,
     no_modify_path: bool,
     shell_env: ShellEnv<'_>,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), InitError> {
     let (config_file, shell_kind) = if shell_env.shell.contains("zsh") {
         let zdotdir = shell_env.zdotdir.unwrap_or(shell_env.home);
@@ -460,24 +460,24 @@ end
             ui.note(format!(
                 "Could not write to {} due to error: {}",
                 config_file, e
-            ))?;
-            ui.info(format!("Please add the following to {}:", config_file))?;
-            ui.info(&managed_block)?;
+            ));
+            ui.info(format!("Please add the following to {}:", config_file));
+            ui.info(&managed_block);
         } else {
-            ui.info(format!("Updated zerobrew configuration in {}", config_file))?;
+            ui.info(format!("Updated zerobrew configuration in {}", config_file));
             ui.info(format!(
                 "Added {} and {} to PATH",
                 zerobrew_bin,
                 prefix_bin.display()
-            ))?;
+            ));
         }
     } else if no_modify_path {
-        ui.info("Skipped shell configuration (--no-modify-path)")?;
+        ui.info("Skipped shell configuration (--no-modify-path)");
         ui.info(format!(
             "To use zerobrew, add {} and {} to your PATH",
             zerobrew_bin,
             prefix_bin.display()
-        ))?;
+        ));
     }
 
     Ok(())
@@ -487,31 +487,22 @@ pub fn ensure_init(
     root: &Path,
     prefix: &Path,
     auto_init: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     if !needs_init(root, prefix) {
         return Ok(());
     }
 
-    // Check if both stdin and stdout are TTYs
-    // If stdout is not a TTY, the user won't see the prompt, so don't prompt
-    // If stdin is not a TTY, we can't read input, so don't prompt
-    let is_interactive = std::io::IsTerminal::is_terminal(&std::io::stdin())
-        && std::io::IsTerminal::is_terminal(&std::io::stdout());
+    let is_interactive = ui.is_interactive();
 
     if is_interactive && !auto_init {
-        ui.note("Zerobrew needs to be initialized first.")
-            .map_err(io_to_core_error)?;
-        ui.info("This will create directories at:")
-            .map_err(io_to_core_error)?;
-        ui.bullet(root.display()).map_err(io_to_core_error)?;
-        ui.bullet(prefix.display()).map_err(io_to_core_error)?;
-        ui.blank_line().map_err(io_to_core_error)?;
+        ui.note("Zerobrew needs to be initialized first.");
+        ui.info("This will create directories at:");
+        ui.bullet(root.display());
+        ui.bullet(prefix.display());
+        ui.blank_line();
 
-        if !ui
-            .prompt_yes_no("Initialize now? [Y/n]", PromptDefault::Yes)
-            .map_err(io_to_core_error)?
-        {
+        if !ui.confirm("Initialize now?", PromptDefault::Yes) {
             return Err(zb_core::Error::StoreCorruption {
                 message: "Initialization required. Run 'zb init' first.".to_string(),
             });
@@ -530,16 +521,10 @@ pub fn ensure_init(
     })
 }
 
-fn io_to_core_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::StoreCorruption {
-        message: format!("failed to write CLI output: {err}"),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ui::Ui;
+    use crate::ui::{Ui, UiOptions};
     use std::fs;
     use std::path::Path;
 
@@ -570,7 +555,7 @@ mod tests {
         shell: &str,
         zdotdir: Option<&Path>,
     ) -> Result<(), InitError> {
-        let mut ui = Ui::new();
+        let (mut ui, _out, _err) = Ui::for_test(UiOptions::default());
         let home = prefix.parent().unwrap().to_str().unwrap();
         let zdotdir = zdotdir.map(|path| path.to_str().unwrap());
         super::add_to_path_with_env(

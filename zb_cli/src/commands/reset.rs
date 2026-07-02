@@ -4,34 +4,24 @@ use std::process::Command;
 use zb_io::validate_privileged_path;
 
 use crate::init::{InitError, run_init};
-use crate::ui::{PromptDefault, StdUi};
+use crate::ui::{PromptDefault, Ui};
 
-pub fn execute(
-    root: &Path,
-    prefix: &Path,
-    yes: bool,
-    ui: &mut StdUi,
-) -> Result<(), zb_core::Error> {
+pub fn execute(root: &Path, prefix: &Path, yes: bool, ui: &mut Ui) -> Result<(), zb_core::Error> {
     validate_privileged_path(root)?;
     validate_privileged_path(prefix)?;
 
     if !root.exists() && !prefix.exists() {
-        ui.info("Nothing to reset - directories do not exist.")
-            .map_err(ui_error)?;
+        ui.info("Nothing to reset - directories do not exist.");
         return Ok(());
     }
 
     if !yes {
-        ui.note("This will delete all zerobrew data at:")
-            .map_err(ui_error)?;
-        ui.bullet(root.display()).map_err(ui_error)?;
-        ui.bullet(prefix.display()).map_err(ui_error)?;
+        ui.note("This will delete all zerobrew data at:");
+        ui.bullet(root.display());
+        ui.bullet(prefix.display());
 
-        if !ui
-            .prompt_yes_no("Continue? [y/N]", PromptDefault::No)
-            .map_err(ui_error)?
-        {
-            ui.info("Aborted.").map_err(ui_error)?;
+        if !ui.confirm("Continue?", PromptDefault::No) {
+            ui.info("Aborted.");
             return Ok(());
         }
     }
@@ -41,8 +31,7 @@ pub fn execute(
             continue;
         }
 
-        ui.heading(format!("Clearing {}...", dir.display()))
-            .map_err(ui_error)?;
+        ui.heading(format!("Clearing {}...", dir.display()));
 
         // Instead of removing the directory entirely (which would require sudo to recreate),
         // just remove its contents. This avoids needing sudo when run_init recreates subdirs.
@@ -64,14 +53,15 @@ pub fn execute(
             failed = true;
         }
 
-        // Only fall back to sudo if we couldn't clear contents AND stdout is a terminal
+        // Only fall back to sudo if we couldn't clear contents AND we can ask the user
         if failed {
-            if !std::io::IsTerminal::is_terminal(&std::io::stdout()) {
-                let _ = ui.error(format!(
-                    "Failed to clear {} (permission denied, non-interactive mode)",
-                    dir.display()
-                ));
-                std::process::exit(1);
+            if !ui.is_interactive() {
+                return Err(zb_core::Error::FileError {
+                    message: format!(
+                        "failed to clear {} (permission denied, non-interactive mode)",
+                        dir.display()
+                    ),
+                });
             }
 
             // Interactive mode: fall back to sudo for the entire directory
@@ -79,9 +69,10 @@ pub fn execute(
                 .args(["rm", "-rf", &dir.to_string_lossy()])
                 .status();
 
-            if status.is_err() || !status.unwrap().success() {
-                let _ = ui.error(format!("Failed to remove {}", dir.display()));
-                std::process::exit(1);
+            if !status.is_ok_and(|status| status.success()) {
+                return Err(zb_core::Error::FileError {
+                    message: format!("failed to remove {}", dir.display()),
+                });
             }
         }
     }
@@ -91,14 +82,7 @@ pub fn execute(
         InitError::Message(msg) => zb_core::Error::StoreCorruption { message: msg },
     })?;
 
-    ui.heading("Reset complete. Ready for cold install.")
-        .map_err(ui_error)?;
+    ui.heading("Reset complete. Ready for cold install.");
 
     Ok(())
-}
-
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::StoreCorruption {
-        message: format!("failed to write CLI output: {err}"),
-    }
 }

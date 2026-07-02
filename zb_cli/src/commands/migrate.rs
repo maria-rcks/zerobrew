@@ -1,4 +1,4 @@
-use crate::ui::{PromptDefault, StdUi};
+use crate::ui::{PromptDefault, Ui};
 use console::style;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -7,10 +7,9 @@ pub async fn execute(
     installer: &mut zb_io::Installer,
     yes: bool,
     force: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
-    ui.heading("Fetching installed Homebrew packages...")
-        .map_err(ui_error)?;
+    ui.heading("Fetching installed Homebrew packages...");
 
     let packages = zb_io::get_homebrew_packages()?;
 
@@ -18,19 +17,17 @@ pub async fn execute(
         && packages.non_core_formulas.is_empty()
         && packages.casks.is_empty()
     {
-        ui.println("No Homebrew packages installed.")
-            .map_err(ui_error)?;
+        ui.status("No Homebrew packages installed.");
         return Ok(());
     }
 
-    ui.println(format!(
+    ui.status(format!(
         "{} core formulas, {} non-core formulas, {} casks found",
         style(packages.formulas.len()).green(),
         style(packages.non_core_formulas.len()).yellow(),
         style(packages.casks.len()).green()
-    ))
-    .map_err(ui_error)?;
-    ui.blank_line().map_err(ui_error)?;
+    ));
+    ui.blank_line();
 
     let formula_names: Vec<String> = packages
         .formulas
@@ -54,21 +51,19 @@ pub async fn execute(
     };
 
     if formula_names.is_empty() && cask_install_names.is_empty() {
-        ui.println("No supported Homebrew packages to migrate.")
-            .map_err(ui_error)?;
+        ui.status("No supported Homebrew packages to migrate.");
         return Ok(());
     }
 
     if !formula_names.is_empty() {
-        ui.println(format!(
+        ui.status(format!(
             "The following {} formulas will be migrated:",
             formula_names.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         for name in &formula_names {
-            ui.bullet(name).map_err(ui_error)?;
+            ui.bullet(name);
         }
-        ui.blank_line().map_err(ui_error)?;
+        ui.blank_line();
     }
 
     if let Some((app_dir, font_dir)) = &cask_fallback_dirs {
@@ -77,60 +72,50 @@ pub async fn execute(
             cask_target_conflicts.len(),
             app_dir.display(),
             font_dir.display()
-        ))
-        .map_err(ui_error)?;
+        ));
         for conflict in cask_target_conflicts.iter().take(5) {
-            ui.bullet(conflict.display().to_string())
-                .map_err(ui_error)?;
+            ui.bullet(conflict.display().to_string());
         }
         if cask_target_conflicts.len() > 5 {
-            ui.bullet(format!("... and {} more", cask_target_conflicts.len() - 5))
-                .map_err(ui_error)?;
+            ui.bullet(format!("... and {} more", cask_target_conflicts.len() - 5));
         }
-        ui.blank_line().map_err(ui_error)?;
+        ui.blank_line();
     }
 
     if !unsupported_casks.is_empty() {
         ui.note(format!(
             "Skipping {} unsupported cask(s):",
             unsupported_casks.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         for name in &unsupported_casks {
-            ui.bullet(name).map_err(ui_error)?;
+            ui.bullet(name);
         }
-        ui.blank_line().map_err(ui_error)?;
+        ui.blank_line();
     }
 
     if !cask_jsons.is_empty() {
-        ui.println(format!(
+        ui.status(format!(
             "The following {} casks will be migrated:",
             cask_jsons.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         for (name, _) in &cask_jsons {
-            ui.bullet(name).map_err(ui_error)?;
+            ui.bullet(name);
         }
-        ui.blank_line().map_err(ui_error)?;
+        ui.blank_line();
     }
 
-    if !yes
-        && !ui
-            .prompt_yes_no("Continue with migration? [y/N]", PromptDefault::No)
-            .map_err(ui_error)?
-    {
-        ui.println("Aborted.").map_err(ui_error)?;
+    if !yes && !ui.confirm("Continue with migration?", PromptDefault::No) {
+        ui.status("Aborted.");
         return Ok(());
     }
 
-    ui.blank_line().map_err(ui_error)?;
+    ui.blank_line();
     ui.heading(format!(
         "Migrating {} packages to zerobrew...",
         style(formula_names.len() + cask_install_names.len())
             .green()
             .bold()
-    ))
-    .map_err(ui_error)?;
+    ));
 
     if !formula_names.is_empty() {
         crate::commands::install::execute(
@@ -160,14 +145,12 @@ pub async fn execute(
         ui.heading(format!(
             "Installing casks ({} packages)...",
             cask_jsons.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         if let Some((app_dir, font_dir)) = cask_fallback_dirs {
             installer.set_cask_artifact_dirs(app_dir, font_dir);
         }
         if let Err(e) = installer.install_casks_from_json(&cask_jsons, true).await {
-            ui.error(format!("Cask migration hit an error: {e}"))
-                .map_err(ui_error)?;
+            ui.error(format!("Cask migration hit an error: {e}"));
         }
     }
 
@@ -177,79 +160,67 @@ pub async fn execute(
         check_install_status(installer, &expected_names);
     let success_count = successfully_installed.len();
 
-    ui.blank_line().map_err(ui_error)?;
+    ui.blank_line();
     ui.heading(format!(
         "Migrated {} of {} packages to zerobrew",
         style(success_count).green().bold(),
         expected_names.len()
-    ))
-    .map_err(ui_error)?;
+    ));
 
     if !failed_installed.is_empty() {
         ui.note(format!(
             "Failed to migrate {} package(s):",
             failed_installed.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         for name in &failed_installed {
-            ui.bullet(name).map_err(ui_error)?;
+            ui.bullet(name);
         }
-        ui.blank_line().map_err(ui_error)?;
+        ui.blank_line();
     }
 
     if success_count == 0 {
-        ui.println("No packages were successfully migrated. Skipping uninstall from Homebrew.")
-            .map_err(ui_error)?;
+        ui.status("No packages were successfully migrated. Skipping uninstall from Homebrew.");
         return Ok(());
     }
 
-    ui.blank_line().map_err(ui_error)?;
+    ui.blank_line();
     if !yes
-        && !ui
-            .prompt_yes_no(
-                &format!(
-                    "Uninstall {} package(s) from Homebrew? [y/N]",
-                    style(success_count).green()
-                ),
-                PromptDefault::No,
-            )
-            .map_err(ui_error)?
+        && !ui.confirm(
+            &format!(
+                "Uninstall {} package(s) from Homebrew?",
+                style(success_count).green()
+            ),
+            PromptDefault::No,
+        )
     {
-        ui.println("Skipped uninstall from Homebrew.")
-            .map_err(ui_error)?;
+        ui.status("Skipped uninstall from Homebrew.");
         return Ok(());
     }
 
-    ui.blank_line().map_err(ui_error)?;
-    ui.heading("Uninstalling from Homebrew...")
-        .map_err(ui_error)?;
+    ui.blank_line();
+    ui.heading("Uninstalling from Homebrew...");
 
     let uninstall_failed = uninstall_homebrew_packages(&successfully_installed, force, ui)?;
 
     let uninstalled = successfully_installed.len() - uninstall_failed.len();
-    ui.blank_line().map_err(ui_error)?;
+    ui.blank_line();
     ui.heading(format!(
         "Uninstalled {} of {} package(s) from Homebrew",
         style(uninstalled).green().bold(),
         success_count
-    ))
-    .map_err(ui_error)?;
+    ));
 
     if !uninstall_failed.is_empty() {
         ui.note(format!(
             "Failed to uninstall {} package(s) from Homebrew:",
             uninstall_failed.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         for name in &uninstall_failed {
-            ui.bullet(name).map_err(ui_error)?;
+            ui.bullet(name);
         }
-        ui.println("You may need to uninstall these manually with:")
-            .map_err(ui_error)?;
-        ui.println("    brew uninstall --force <formula>")
-            .map_err(ui_error)?;
-        ui.println("    brew uninstall --cask --force <cask>")
-            .map_err(ui_error)?;
+        ui.status("You may need to uninstall these manually with:");
+        ui.status("    brew uninstall --force <formula>");
+        ui.status("    brew uninstall --cask --force <cask>");
     }
 
     Ok(())
@@ -307,7 +278,7 @@ fn supported_cask_jsons(
 fn uninstall_homebrew_packages(
     installed: &[String],
     force: bool,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<Vec<String>, zb_core::Error> {
     let (casks, formulas): (Vec<_>, Vec<_>) = installed
         .iter()
@@ -316,8 +287,7 @@ fn uninstall_homebrew_packages(
     let mut failed = Vec::new();
 
     if !formulas.is_empty() {
-        ui.step_start(format!("uninstalling {} formulas combined", formulas.len()))
-            .map_err(ui_error)?;
+        ui.step_start(format!("uninstalling {} formulas combined", formulas.len()));
         let mut args = vec!["uninstall"];
         if force {
             args.push("--force");
@@ -327,17 +297,16 @@ fn uninstall_homebrew_packages(
         }
 
         match Command::new("brew").args(&args).status() {
-            Ok(status) if status.success() => ui.step_ok().map_err(ui_error)?,
+            Ok(status) if status.success() => ui.step_ok(),
             Ok(_) | Err(_) => {
-                ui.step_fail().map_err(ui_error)?;
+                ui.step_fail();
                 failed.extend(still_installed_formulas(&formulas));
             }
         }
     }
 
     if !casks.is_empty() {
-        ui.step_start(format!("uninstalling {} casks combined", casks.len()))
-            .map_err(ui_error)?;
+        ui.step_start(format!("uninstalling {} casks combined", casks.len()));
         let cask_tokens: Vec<String> = casks
             .iter()
             .map(|name| name.trim_start_matches("cask:").to_string())
@@ -351,9 +320,9 @@ fn uninstall_homebrew_packages(
         }
 
         match Command::new("brew").args(&args).status() {
-            Ok(status) if status.success() => ui.step_ok().map_err(ui_error)?,
+            Ok(status) if status.success() => ui.step_ok(),
             Ok(_) | Err(_) => {
-                ui.step_fail().map_err(ui_error)?;
+                ui.step_fail();
                 failed.extend(
                     still_installed_casks(&cask_tokens)
                         .into_iter()
@@ -416,12 +385,6 @@ fn check_install_status(
     }
 
     (successfully_installed, failed_installed)
-}
-
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::StoreCorruption {
-        message: format!("failed to write CLI output: {err}"),
-    }
 }
 
 #[cfg(test)]

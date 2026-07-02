@@ -137,6 +137,15 @@ fn assert_stdout_contains(output: &Output, needle: &str) {
     );
 }
 
+/// Human status/chrome lines go to stderr (stdout is reserved for data).
+fn assert_stderr_contains(output: &Output, needle: &str) {
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(needle),
+        "expected stderr to contain {needle:?}, got: {stderr}"
+    );
+}
+
 fn assert_no_installed_symlinks(dir: &std::path::Path) {
     if !dir.exists() {
         return;
@@ -245,7 +254,7 @@ fn test_list_installed_formulas() {
 
     let output = t.zb(&["list"]);
     assert_success(&output, "zb list (empty)");
-    assert_stdout_contains(&output, "No formulas installed");
+    assert_stderr_contains(&output, "No formulas installed");
 
     assert_success(&t.zb(&["install", "jq"]), "zb install jq");
 
@@ -258,7 +267,7 @@ fn test_list_installed_formulas() {
 
     let output = t.zb(&["list"]);
     assert_success(&output, "zb list (empty)");
-    assert_stdout_contains(&output, "No formulas installed");
+    assert_stderr_contains(&output, "No formulas installed");
 }
 
 #[test]
@@ -268,7 +277,7 @@ fn test_info_finds_installed_formula() {
 
     let output = t.zb(&["info", "jq"]);
     assert_success(&output, "zb info jq (not installed)");
-    assert_stdout_contains(&output, "not installed");
+    assert_stderr_contains(&output, "not installed");
 
     assert_success(&t.zb(&["install", "jq"]), "zb install jq");
 

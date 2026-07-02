@@ -1,7 +1,5 @@
-use console::style;
-
 use crate::commands::install::{self, InstallRequest};
-use crate::ui::StdUi;
+use crate::ui::Ui;
 use crate::utils::{PackageKind, normalize_package_name};
 use std::path::PathBuf;
 
@@ -25,7 +23,7 @@ pub struct UpgradeRequest {
 pub async fn execute(
     installer: &mut zb_io::Installer,
     request: UpgradeRequest,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let kind = if request.cask {
         PackageKind::Cask
@@ -38,7 +36,7 @@ pub async fn execute(
     let names = if request.formulas.is_empty() {
         let (outdated, warnings) = installer.check_outdated().await?;
         for warning in warnings {
-            ui.warn(warning).map_err(ui_error)?;
+            ui.warn(warning);
         }
         outdated
             .into_iter()
@@ -54,17 +52,13 @@ pub async fn execute(
     };
 
     if names.is_empty() {
-        ui.println(format!(
-            "{} All packages are up to date.",
-            style("==>").cyan().bold()
-        ))
-        .map_err(ui_error)?;
+        ui.heading("All packages are up to date.");
         return Ok(());
     }
 
     if request.dry_run {
         for name in names {
-            println!("{name}");
+            ui.data(name);
         }
         return Ok(());
     }
@@ -96,12 +90,6 @@ fn package_matches_kind(name: &str, kind: PackageKind) -> bool {
         PackageKind::Auto => true,
         PackageKind::Formula => !name.starts_with("cask:"),
         PackageKind::Cask => name.starts_with("cask:"),
-    }
-}
-
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::StoreCorruption {
-        message: format!("failed to write CLI output: {err}"),
     }
 }
 

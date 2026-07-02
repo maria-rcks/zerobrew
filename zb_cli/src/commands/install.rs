@@ -1,13 +1,12 @@
 use console::style;
 use indicatif::{MultiProgress, ProgressBar, ProgressStyle};
 use std::collections::HashMap;
-use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use zb_io::{CaskInstallOptions, DownloadProgressCallback, InstallProgress, ProgressCallback};
 
-use crate::ui::{PromptDefault, StdUi};
+use crate::ui::{PromptDefault, Ui};
 use crate::utils::{
     PackageKind, normalize_package_name, suggest_homebrew, suggest_missing_formula_matches,
 };
@@ -31,15 +30,14 @@ pub struct InstallRequest {
 pub async fn execute(
     installer: &mut zb_io::Installer,
     request: InstallRequest,
-    ui: &mut StdUi,
+    ui: &mut Ui,
 ) -> Result<(), zb_core::Error> {
     let start = Instant::now();
     let formulas = request.formulas;
     ui.heading(format!(
         "Installing {}...",
         style(formulas.join(", ")).bold()
-    ))
-    .map_err(ui_error)?;
+    ));
 
     let mut normalized_names = Vec::new();
     let mut cask_names = Vec::new();
@@ -60,7 +58,7 @@ pub async fn execute(
                 }
             }
             Err(e) => {
-                suggest_homebrew(formula, &e);
+                suggest_homebrew(ui, formula, &e);
                 return Err(e);
             }
         }
@@ -80,11 +78,11 @@ pub async fn execute(
         {
             Ok(p) => p,
             Err(e) => {
-                let handled_missing = suggest_missing_formula_matches(installer, &e).await;
+                let handled_missing = suggest_missing_formula_matches(installer, &e, ui).await;
 
                 if !handled_missing {
                     for formula in &formulas {
-                        suggest_homebrew(formula, &e);
+                        suggest_homebrew(ui, formula, &e);
                     }
                 }
                 return Err(e);
@@ -94,31 +92,24 @@ pub async fn execute(
         ui.heading(format!(
             "Resolving dependencies ({} packages)...",
             plan.items.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         for item in &plan.items {
             ui.bullet(format!(
                 "{} {}",
                 style(&item.formula.name).green(),
                 style(&item.formula.versions.stable).dim()
-            ))
-            .map_err(ui_error)?;
+            ));
         }
 
-        if request.ask {
-            let answer = ui
-                .prompt_yes_no("Install these formulae? [y/N]", PromptDefault::No)
-                .map_err(ui_error)?;
-            if !answer {
-                ui.println("Install cancelled.").map_err(ui_error)?;
-                return Ok(());
-            }
+        if request.ask && !ui.confirm("Install these formulae?", PromptDefault::No) {
+            ui.status("Install cancelled.");
+            return Ok(());
         }
 
-        ui.heading("Downloading and installing formulas...")
-            .map_err(ui_error)?;
+        ui.heading("Downloading and installing formulas...");
 
-        let (progress_callback, bars) = create_progress_callback();
+        let renderer = ProgressRenderer::new(ui);
+        let progress_callback = renderer.callback();
         let formula_progress_callback: Arc<ProgressCallback> = Arc::new(Box::new({
             let progress_callback = progress_callback.clone();
             move |event| progress_callback(event)
@@ -128,41 +119,36 @@ pub async fn execute(
             .execute_with_progress(plan, !request.no_link, Some(formula_progress_callback))
             .await;
 
-        finish_progress_bars(&bars);
+        renderer.finish();
 
         let result = match result_val {
             Ok(r) => r,
             Err(ref e @ zb_core::Error::LinkConflict { ref conflicts }) => {
-                ui.blank_line().map_err(ui_error)?;
-                ui.error("The link step did not complete successfully.")
-                    .map_err(ui_error)?;
-                ui.println("The formula was installed, but is not symlinked into the prefix.")
-                    .map_err(ui_error)?;
-                ui.blank_line().map_err(ui_error)?;
-                ui.println("Possible conflicting files:")
-                    .map_err(ui_error)?;
+                ui.blank_line();
+                ui.error("The link step did not complete successfully.");
+                ui.status("The formula was installed, but is not symlinked into the prefix.");
+                ui.blank_line();
+                ui.status("Possible conflicting files:");
                 for c in conflicts {
                     if let Some(ref owner) = c.owned_by {
-                        ui.println(format!(
+                        ui.status(format!(
                             "  {} (symlink belonging to {})",
                             c.path.display(),
                             style(owner).yellow()
-                        ))
-                        .map_err(ui_error)?;
+                        ));
                     } else {
-                        ui.println(format!("  {}", c.path.display()))
-                            .map_err(ui_error)?;
+                        ui.status(format!("  {}", c.path.display()));
                     }
                 }
-                ui.blank_line().map_err(ui_error)?;
+                ui.blank_line();
                 return Err(e.clone());
             }
             Err(e) => {
-                let handled_missing = suggest_missing_formula_matches(installer, &e).await;
+                let handled_missing = suggest_missing_formula_matches(installer, &e, ui).await;
 
                 if !handled_missing {
                     for formula in &formulas {
-                        suggest_homebrew(formula, &e);
+                        suggest_homebrew(ui, formula, &e);
                     }
                 }
                 return Err(e);
@@ -175,52 +161,41 @@ pub async fn execute(
         ui.heading(format!(
             "Installing casks ({} packages)...",
             cask_names.len()
-        ))
-        .map_err(ui_error)?;
+        ));
         let mut options = CaskInstallOptions::new(!request.no_link);
         options.binaries = !request.no_binaries;
         options.force = request.force;
         options.app_dir = request.appdir;
         options.font_dir = request.fontdir;
         options.appimage_dir = request.appimagedir;
-        let (progress_callback, bars) = create_progress_callback();
-        options.progress = Some(progress_callback);
+        let renderer = ProgressRenderer::new(ui);
+        options.progress = Some(renderer.callback());
         let result_val = installer
             .install_casks_with_options(&cask_names, options.clone())
             .await;
-        finish_progress_bars(&bars);
+        renderer.finish();
         let result = match result_val {
             Ok(r) => r,
             Err(ref e @ zb_core::Error::LinkConflict { ref conflicts }) => {
                 if request.force {
-                    render_cask_link_conflict(ui, conflicts)?;
+                    render_cask_link_conflict(ui, conflicts);
                     return Err(e.clone());
                 }
 
-                let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
-                if !interactive {
+                if !ui.is_interactive() {
                     return Err(cask_conflict_error(&cask_names));
                 }
 
-                render_cask_link_conflict(ui, conflicts)?;
-                if ui
-                    .prompt_yes_no(
-                        &format!(
-                            "Replace existing target and continue? {}",
-                            style("[y/N]").dim()
-                        ),
-                        PromptDefault::No,
-                    )
-                    .map_err(ui_error)?
-                {
+                render_cask_link_conflict(ui, conflicts);
+                if ui.confirm("Replace existing target and continue?", PromptDefault::No) {
                     let mut retry_options = options.clone();
                     retry_options.force = true;
-                    let (progress_callback, retry_bars) = create_progress_callback();
-                    retry_options.progress = Some(progress_callback);
+                    let retry_renderer = ProgressRenderer::new(ui);
+                    retry_options.progress = Some(retry_renderer.callback());
                     let retry = installer
                         .install_casks_with_options(&cask_names, retry_options)
                         .await;
-                    finish_progress_bars(&retry_bars);
+                    retry_renderer.finish();
                     retry?
                 } else {
                     return Err(cask_conflict_error(&cask_names));
@@ -232,159 +207,198 @@ pub async fn execute(
     }
 
     let elapsed = start.elapsed();
-    ui.blank_line().map_err(ui_error)?;
+    ui.blank_line();
     ui.heading(format!(
         "Installed {} packages in {:.2}s",
         style(installed_count).green().bold(),
         elapsed.as_secs_f64()
-    ))
-    .map_err(ui_error)?;
+    ));
 
     Ok(())
 }
 
-fn ui_error(err: std::io::Error) -> zb_core::Error {
-    zb_core::Error::FileError {
-        message: format!("failed to write CLI output: {err}"),
+/// Renders `InstallProgress` events onto the `Ui`-owned `MultiProgress`.
+///
+/// Bars draw only when the `Ui` decided progress is enabled (stderr is a TTY
+/// and `--quiet` is not set); otherwise events are dropped without any
+/// styling or locking work. The bar map lock is never held across indicatif
+/// operations: `ProgressBar` is internally reference-counted, so handles are
+/// cloned out and terminal redraws happen without serializing the download
+/// workers behind the map lock.
+pub struct ProgressRenderer {
+    multi: MultiProgress,
+    bars: Arc<Mutex<HashMap<String, ProgressBar>>>,
+    enabled: bool,
+}
+
+struct BarStyles {
+    download: ProgressStyle,
+    spinner: ProgressStyle,
+    done: ProgressStyle,
+}
+
+impl BarStyles {
+    fn new() -> Self {
+        Self {
+            download: ProgressStyle::default_bar()
+                .template(
+                    "    {prefix:<16} {bar:25.cyan/dim} {bytes:>10}/{total_bytes:<10} {eta:>6}",
+                )
+                .expect("static template must parse")
+                .progress_chars("━━╸"),
+            spinner: ProgressStyle::default_spinner()
+                .template("    {prefix:<16} {spinner:.cyan} {msg}")
+                .expect("static template must parse")
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+            done: ProgressStyle::default_spinner()
+                .template("    {prefix:<16} {msg}")
+                .expect("static template must parse"),
+        }
     }
 }
 
-type ProgressBars = Arc<Mutex<HashMap<String, ProgressBar>>>;
+const TICK_INTERVAL: std::time::Duration = std::time::Duration::from_millis(80);
 
-fn create_progress_callback() -> (DownloadProgressCallback, ProgressBars) {
-    let multi = MultiProgress::new();
-    let bars: ProgressBars = Arc::new(Mutex::new(HashMap::new()));
+impl ProgressRenderer {
+    pub fn new(ui: &Ui) -> Self {
+        Self {
+            multi: ui.multi_progress(),
+            bars: Arc::new(Mutex::new(HashMap::new())),
+            enabled: ui.progress_enabled(),
+        }
+    }
 
-    let download_style = ProgressStyle::default_bar()
-        .template("    {prefix:<16} {bar:25.cyan/dim} {bytes:>10}/{total_bytes:<10} {eta:>6}")
-        .unwrap()
-        .progress_chars("━━╸");
+    pub fn callback(&self) -> DownloadProgressCallback {
+        let bars = self.bars.clone();
+        let enabled = self.enabled;
+        let multi = self.multi.clone();
+        let styles = Arc::new(BarStyles::new());
 
-    let spinner_style = ProgressStyle::default_spinner()
-        .template("    {prefix:<16} {spinner:.cyan} {msg}")
-        .unwrap()
-        .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏");
+        Arc::new(move |event| {
+            if !enabled {
+                return;
+            }
+            render_event(&multi, &bars, &styles, event);
+        })
+    }
 
-    let done_style = ProgressStyle::default_spinner()
-        .template("    {prefix:<16} {msg}")
-        .unwrap();
+    pub fn finish(&self) {
+        if !self.enabled {
+            return;
+        }
+        // Clone the handles out first so the map lock is not held across
+        // indicatif operations (which may redraw the terminal).
+        let handles: Vec<ProgressBar> = self.bars.lock().unwrap().values().cloned().collect();
+        for pb in handles {
+            if !pb.is_finished() {
+                pb.finish();
+            }
+        }
+    }
+}
 
-    let bars_clone = bars.clone();
-    let callback: DownloadProgressCallback = Arc::new(move |event| {
-        let mut bars = bars_clone.lock().unwrap();
-        match event {
-            InstallProgress::DownloadStarted { name, total_bytes } => {
-                if let Some(pb) = bars.remove(&name) {
-                    pb.finish_and_clear();
-                }
-                let pb = if let Some(total) = total_bytes {
-                    let pb = multi.add(ProgressBar::new(total));
-                    pb.set_style(download_style.clone());
-                    pb
-                } else {
-                    let pb = multi.add(ProgressBar::new_spinner());
-                    pb.set_style(spinner_style.clone());
-                    pb.set_message("downloading...");
-                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-                    pb
-                };
+fn lookup(bars: &Mutex<HashMap<String, ProgressBar>>, name: &str) -> Option<ProgressBar> {
+    bars.lock().unwrap().get(name).cloned()
+}
+
+fn render_event(
+    multi: &MultiProgress,
+    bars: &Mutex<HashMap<String, ProgressBar>>,
+    styles: &BarStyles,
+    event: InstallProgress,
+) {
+    match event {
+        InstallProgress::DownloadStarted { name, total_bytes } => {
+            let pb = if let Some(total) = total_bytes {
+                let pb = multi.add(ProgressBar::new(total));
+                pb.set_style(styles.download.clone());
+                pb
+            } else {
+                let pb = multi.add(ProgressBar::new_spinner());
+                pb.set_style(styles.spinner.clone());
+                pb.set_message("downloading...");
+                pb.enable_steady_tick(TICK_INTERVAL);
+                pb
+            };
+            pb.set_prefix(name.clone());
+            let previous = bars.lock().unwrap().insert(name, pb);
+            if let Some(previous) = previous {
+                previous.finish_and_clear();
+            }
+        }
+        InstallProgress::DownloadProgress {
+            name,
+            downloaded,
+            total_bytes,
+        } => {
+            if total_bytes.is_some()
+                && let Some(pb) = lookup(bars, &name)
+            {
+                pb.set_position(downloaded);
+            }
+        }
+        InstallProgress::DownloadCompleted { name, total_bytes } => {
+            let pb = lookup(bars, &name).unwrap_or_else(|| {
+                let pb = multi.add(ProgressBar::new_spinner());
                 pb.set_prefix(name.clone());
-                bars.insert(name, pb);
+                bars.lock().unwrap().insert(name.clone(), pb.clone());
+                pb
+            });
+            if total_bytes > 0 {
+                pb.set_position(total_bytes);
             }
-            InstallProgress::DownloadProgress {
-                name,
-                downloaded,
-                total_bytes,
-            } => {
-                if let Some(pb) = bars.get(&name)
-                    && total_bytes.is_some()
-                {
-                    pb.set_position(downloaded);
-                }
-            }
-            InstallProgress::DownloadCompleted { name, total_bytes } => {
-                if !bars.contains_key(&name) {
-                    let pb = multi.add(ProgressBar::new_spinner());
-                    pb.set_style(spinner_style.clone());
-                    pb.set_prefix(name.clone());
-                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-                    bars.insert(name.clone(), pb);
-                }
-                if let Some(pb) = bars.get(&name) {
-                    if total_bytes > 0 {
-                        pb.set_position(total_bytes);
-                    }
-                    pb.set_style(spinner_style.clone());
-                    pb.set_message("unpacking...");
-                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-                }
-            }
-            InstallProgress::UnpackStarted { name } => {
-                if !bars.contains_key(&name) {
-                    let pb = multi.add(ProgressBar::new_spinner());
-                    pb.set_style(spinner_style.clone());
-                    pb.set_prefix(name.clone());
-                    pb.enable_steady_tick(std::time::Duration::from_millis(80));
-                    bars.insert(name.clone(), pb);
-                }
-                if let Some(pb) = bars.get(&name) {
-                    pb.set_message("unpacking...");
-                }
-            }
-            InstallProgress::UnpackCompleted { name } => {
-                if let Some(pb) = bars.get(&name) {
-                    pb.set_message("unpacked");
-                }
-            }
-            InstallProgress::LinkStarted { name } => {
-                if let Some(pb) = bars.get(&name) {
-                    pb.set_message("linking...");
-                }
-            }
-            InstallProgress::LinkCompleted { name } => {
-                if let Some(pb) = bars.get(&name) {
-                    pb.set_message("linked");
-                }
-            }
-            InstallProgress::LinkSkipped { name, reason } => {
-                if let Some(pb) = bars.get(&name) {
-                    pb.set_message(format!("link skipped ({})", reason));
-                }
-            }
-            InstallProgress::InstallCompleted { name } => {
-                if let Some(pb) = bars.get(&name) {
-                    pb.set_style(done_style.clone());
-                    pb.set_message(format!("{} installed", style("✓").green()));
-                    pb.finish();
-                }
+            pb.set_style(styles.spinner.clone());
+            pb.set_message("unpacking...");
+            pb.enable_steady_tick(TICK_INTERVAL);
+        }
+        InstallProgress::UnpackStarted { name } => {
+            let pb = lookup(bars, &name).unwrap_or_else(|| {
+                let pb = multi.add(ProgressBar::new_spinner());
+                pb.set_style(styles.spinner.clone());
+                pb.set_prefix(name.clone());
+                pb.enable_steady_tick(TICK_INTERVAL);
+                bars.lock().unwrap().insert(name.clone(), pb.clone());
+                pb
+            });
+            pb.set_message("unpacking...");
+        }
+        InstallProgress::UnpackCompleted { name } => {
+            if let Some(pb) = lookup(bars, &name) {
+                pb.set_message("unpacked");
             }
         }
-    });
-
-    (callback, bars)
-}
-
-fn finish_progress_bars(bars: &ProgressBars) {
-    let bars = bars.lock().unwrap();
-    for pb in bars.values() {
-        if !pb.is_finished() {
-            pb.finish();
+        InstallProgress::LinkStarted { name } => {
+            if let Some(pb) = lookup(bars, &name) {
+                pb.set_message("linking...");
+            }
+        }
+        InstallProgress::LinkCompleted { name } => {
+            if let Some(pb) = lookup(bars, &name) {
+                pb.set_message("linked");
+            }
+        }
+        InstallProgress::LinkSkipped { name, reason } => {
+            if let Some(pb) = lookup(bars, &name) {
+                pb.set_message(format!("link skipped ({})", reason));
+            }
+        }
+        InstallProgress::InstallCompleted { name } => {
+            if let Some(pb) = lookup(bars, &name) {
+                pb.set_style(styles.done.clone());
+                pb.set_message(format!("{} installed", style("✓").green()));
+                pb.finish();
+            }
         }
     }
 }
 
-fn render_cask_link_conflict(
-    ui: &mut StdUi,
-    conflicts: &[zb_core::ConflictedLink],
-) -> Result<(), zb_core::Error> {
+fn render_cask_link_conflict(ui: &mut Ui, conflicts: &[zb_core::ConflictedLink]) {
     let paths = conflicts
         .iter()
         .map(|c| c.path.display().to_string())
         .collect::<Vec<_>>()
         .join(", ");
-    ui.warn(format!("Cask target already exists: {paths}"))
-        .map_err(ui_error)?;
-    Ok(())
+    ui.warn(format!("Cask target already exists: {paths}"));
 }
 
 fn cask_conflict_error(cask_names: &[String]) -> zb_core::Error {
