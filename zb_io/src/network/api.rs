@@ -3,7 +3,8 @@ use std::sync::{Arc, RwLock};
 use crate::checksum::verify_sha256_bytes;
 use crate::network::cache::{ApiCache, CacheEntry};
 use crate::network::suggest::rank_formula_suggestions;
-use crate::network::tap_formula::{parse_tap_formula_ref, parse_tap_formula_ruby};
+use crate::network::tap_cask::parse_tap_cask_ruby;
+use crate::network::tap_formula::{TapFormulaRef, parse_tap_formula_ref, parse_tap_formula_ruby};
 use futures_util::stream::{self, StreamExt};
 use zb_core::formula::{Versions, effective_version};
 use zb_core::{Error, Formula};
@@ -560,6 +561,10 @@ impl ApiClient {
     }
 
     pub async fn get_cask(&self, token: &str) -> Result<serde_json::Value, Error> {
+        if let Some(spec) = parse_tap_formula_ref(token) {
+            return self.get_tap_cask(&spec).await;
+        }
+
         let url = format!("{}/{}.json", self.cask_base_url, token);
         let response = self
             .client
@@ -586,6 +591,99 @@ impl ApiClient {
             .json::<serde_json::Value>()
             .await
             .map_err(Error::network("failed to parse cask JSON"))
+    }
+
+    async fn get_tap_cask(&self, spec: &TapFormulaRef) -> Result<serde_json::Value, Error> {
+        let candidate_repos = if spec.repo.starts_with("homebrew-") {
+            vec![
+                spec.repo.clone(),
+                spec.repo.trim_start_matches("homebrew-").to_string(),
+            ]
+        } else {
+            vec![format!("homebrew-{}", spec.repo), spec.repo.clone()]
+        };
+        let first_char = spec.formula.chars().next().unwrap_or('x');
+        let candidate_paths = [
+            format!("Casks/{}.rb", spec.formula),
+            format!("Casks/{first_char}/{}.rb", spec.formula),
+            format!("Cask/{}.rb", spec.formula),
+            format!("Cask/{first_char}/{}.rb", spec.formula),
+            format!("{}.rb", spec.formula),
+        ];
+        let branches = ["main", "master"];
+
+        let mut last_status: Option<reqwest::StatusCode> = None;
+        let mut last_network_error: Option<Error> = None;
+        let mut saw_non_404_status = false;
+
+        for repo in candidate_repos {
+            for branch in branches {
+                let base_prefix = format!(
+                    "{}/{}/{}/{}/",
+                    self.tap_raw_base_url.trim_end_matches('/'),
+                    spec.owner,
+                    repo,
+                    branch,
+                );
+                let client = self.client.clone();
+                let mut responses = stream::iter(candidate_paths.iter().map(|candidate_path| {
+                    let client = client.clone();
+                    let url = format!("{base_prefix}{candidate_path}");
+                    async move { (url.clone(), client.get(&url).send().await) }
+                }))
+                .buffered(2);
+
+                while let Some((_, response)) = responses.next().await {
+                    match response {
+                        Ok(response) => {
+                            let status = response.status();
+                            if status.is_success() {
+                                let body = response
+                                    .text()
+                                    .await
+                                    .map_err(Error::network("failed to read tap cask body"))?;
+                                return parse_tap_cask_ruby(spec, &body);
+                            }
+
+                            if status != reqwest::StatusCode::NOT_FOUND {
+                                saw_non_404_status = true;
+                            }
+                            last_status = Some(status);
+                        }
+                        Err(e) => {
+                            last_network_error = Some(Error::NetworkFailure {
+                                message: e.to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
+        if !saw_non_404_status
+            && last_network_error.is_none()
+            && last_status == Some(reqwest::StatusCode::NOT_FOUND)
+        {
+            return Err(Error::MissingFormula {
+                name: format!("cask:{}/{}/{}", spec.owner, spec.repo, spec.formula),
+            });
+        }
+
+        if let Some(err) = last_network_error {
+            return Err(err);
+        }
+
+        Err(Error::NetworkFailure {
+            message: format!(
+                "failed to fetch tap cask '{}/{}/{}' (last status: {})",
+                spec.owner,
+                spec.repo,
+                spec.formula,
+                last_status
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| "unknown".to_string())
+            ),
+        })
     }
 
     async fn get_tap_formula(
@@ -1295,6 +1393,59 @@ end
         let cask = client.get_cask("iterm2").await.unwrap();
         assert_eq!(cask["token"], "iterm2");
         assert_eq!(cask["version"], "3.5.0");
+    }
+
+    #[tokio::test]
+    async fn fetches_cask_from_tap_ruby_source() {
+        let mock_server = MockServer::start().await;
+        let rb = r#"
+cask "thock" do
+  version "1.23.0"
+  sha256 "2f7bd6093e8e26aec43f2c48f0c2efefbc0fd22f81bc8788d745304047d4060c"
+
+  url "https://github.com/kamillobinski/thock/releases/download/#{version}/Thock-#{version}.zip"
+  app "Thock.app"
+  binary "thock-cli"
+end
+"#;
+
+        Mock::given(method("GET"))
+            .and(path("/kamillobinski/homebrew-thock/main/Casks/thock.rb"))
+            .respond_with(ResponseTemplate::new(200).set_body_string(rb))
+            .mount(&mock_server)
+            .await;
+
+        let client = ApiClient::with_base_url(mock_server.uri())
+            .unwrap()
+            .with_tap_raw_base_url(mock_server.uri());
+        let cask = client.get_cask("kamillobinski/thock/thock").await.unwrap();
+
+        assert_eq!(cask["token"], "thock");
+        assert_eq!(cask["version"], "1.23.0");
+        assert_eq!(
+            cask["url"],
+            "https://github.com/kamillobinski/thock/releases/download/1.23.0/Thock-1.23.0.zip"
+        );
+        assert_eq!(cask["artifacts"][0]["app"][0][0], "Thock.app");
+        assert_eq!(cask["artifacts"][1]["binary"][0][0], "thock-cli");
+    }
+
+    #[tokio::test]
+    async fn returns_missing_formula_when_all_tap_cask_candidates_are_404() {
+        let mock_server = MockServer::start().await;
+
+        let client = ApiClient::with_base_url(mock_server.uri())
+            .unwrap()
+            .with_tap_raw_base_url(mock_server.uri());
+        let err = client
+            .get_cask("kamillobinski/thock/thock")
+            .await
+            .unwrap_err();
+
+        assert!(matches!(
+            err,
+            Error::MissingFormula { name } if name == "cask:kamillobinski/thock/thock"
+        ));
     }
 
     #[tokio::test]
