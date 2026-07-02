@@ -60,6 +60,10 @@ pub fn normalize_package_name(name: &str, kind: PackageKind) -> Result<String, z
             return Ok(format!("cask:{formula}"));
         }
 
+        if matches!(kind, PackageKind::Cask) {
+            return Ok(format!("cask:{trimmed}"));
+        }
+
         return Ok(trimmed.to_string());
     }
 
@@ -207,6 +211,14 @@ mod tests {
         assert_eq!(
             normalize_formula_name("hashicorp/tap/terraform").unwrap(),
             "hashicorp/tap/terraform".to_string()
+        );
+    }
+
+    #[test]
+    fn normalize_external_tap_cask_with_cask_selection_prefixes_full_name() {
+        assert_eq!(
+            normalize_package_name("kamillobinski/thock/thock", PackageKind::Cask).unwrap(),
+            "cask:kamillobinski/thock/thock".to_string()
         );
     }
 

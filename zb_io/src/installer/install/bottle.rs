@@ -403,11 +403,12 @@ impl Installer {
             )
             .await?;
 
-        let keg_path = self.cellar.keg_path(&cask.install_name, &cask.version);
+        let keg_name = formula_token(&cask.install_name).to_string();
+        let keg_path = self.cellar.keg_path(&keg_name, &cask.version);
         let mut cleanup = FailedInstallGuard::new(
             &self.linker,
             &self.cellar,
-            &cask.install_name,
+            &keg_name,
             &cask.version,
             &keg_path,
             &self.appimage_dir,

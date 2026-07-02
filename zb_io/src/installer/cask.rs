@@ -82,6 +82,12 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
     let mut url = required_string(cask, "url")?;
     let mut sha256 = required_string(cask, "sha256")?;
     let version = required_string(cask, "version")?;
+    let cask_token = cask
+        .get("token")
+        .and_then(Value::as_str)
+        .filter(|token| !token.is_empty())
+        .unwrap_or(token)
+        .to_string();
 
     if let Some(variation) = select_platform_variation(cask) {
         if let Some(variation_url) = variation.get("url").and_then(Value::as_str) {
@@ -130,7 +136,7 @@ pub fn resolve_cask(token: &str, cask: &Value) -> Result<ResolvedCask, Error> {
 
     Ok(ResolvedCask {
         install_name: format!("cask:{token}"),
-        token: token.to_string(),
+        token: cask_token,
         version,
         url,
         sha256,
@@ -771,6 +777,22 @@ mod tests {
         assert_eq!(resolved.binaries[0].target, "tool");
         assert_eq!(resolved.binaries[1].target, "tool-two");
         assert!(resolved.apps.is_empty());
+    }
+
+    #[test]
+    fn resolve_cask_keeps_full_install_name_and_uses_json_token() {
+        let cask = serde_json::json!({
+            "token": "thock",
+            "version": "1.23.0",
+            "url": "https://example.com/thock.zip",
+            "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "artifacts": [{ "app": ["Thock.app"] }]
+        });
+
+        let resolved = resolve_cask("kamillobinski/thock/thock", &cask).unwrap();
+
+        assert_eq!(resolved.install_name, "cask:kamillobinski/thock/thock");
+        assert_eq!(resolved.token, "thock");
     }
 
     #[test]

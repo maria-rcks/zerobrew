@@ -96,7 +96,7 @@ pub fn parse_tap_formula_ref(input: &str) -> Option<TapFormulaRef> {
 /// conditionals (`if Hardware::CPU.arm?`, `if Hardware::CPU.intel?`), and Ruby
 /// `#{version}` string interpolation so that the downstream regex-based parser
 /// sees the relevant fields at the top level.
-fn preprocess_tap_source(source: &str) -> String {
+pub(crate) fn preprocess_tap_source(source: &str) -> String {
     let resolved = resolve_on_platform_blocks(source);
     let resolved = resolve_arch_conditionals(&resolved);
     resolve_version_interpolation(&resolved)

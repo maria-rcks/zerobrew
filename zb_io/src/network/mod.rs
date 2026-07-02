@@ -2,6 +2,7 @@ pub mod api;
 pub mod cache;
 pub mod download;
 pub mod suggest;
+pub(crate) mod tap_cask;
 pub mod tap_formula;
 
 pub use api::ApiClient;
