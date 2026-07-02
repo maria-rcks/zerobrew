@@ -77,6 +77,18 @@ impl fmt::Display for Error {
 
 impl std::error::Error for Error {}
 
+impl Error {
+    /// The process exit code this error should produce, following common CLI
+    /// conventions: `2` for usage errors (matching clap's own parse errors),
+    /// `1` for everything else.
+    pub fn exit_code(&self) -> i32 {
+        match self {
+            Error::InvalidArgument { .. } => 2,
+            _ => 1,
+        }
+    }
+}
+
 macro_rules! error_helpers {
     ($($fn_name:ident => $variant:ident),* $(,)?) => {
         impl Error {
